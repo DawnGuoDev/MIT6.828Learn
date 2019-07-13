@@ -200,7 +200,7 @@ movl    %eax, %cr0
 >
 > 可见函数需要3个参数，一是type即这个段的访问权限；二是base，这个段的起始地址；三是lim，即这个段的大小界限。gdt表中的每一个表项的结构如图所示：
 >
-> ![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/gdt_entry_struct.jpg)
+> ![](./image/gdt_entry_struct.jpg)
 >
 > 其中limit_low就是limit的低16位，base_low就是base的低16位，依次类推，可知每个表项一共8字节，那么可以的得到GDT表的长度为24字节。
 >
