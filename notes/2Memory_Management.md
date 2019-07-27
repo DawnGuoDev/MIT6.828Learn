@@ -340,18 +340,6 @@ kern_pgdir[PDX(UVPT)] = PADDR(kern_pgdir) | PTE_U | PTE_P;
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 它使用MMU去映射和保护每一块被分配出去的内存，
 
 ## 3.内核内存空间
