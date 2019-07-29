@@ -608,9 +608,4 @@ main(int argc, char *argv[])
   int argptr(int n, char **pp, int size);
   ```
   
-  
-  
-  
-  
-  
-
+- 最后的最后，需要在Makefile文件加上对date的编译，在`UPROGS`最后加
