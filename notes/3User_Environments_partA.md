@@ -565,7 +565,7 @@ trap_init(void)
 
 2. 为什么`user/softinit.c`程序调用的是`int $14`，但是报的错是13呢（general protection fault）？
 
-   这是因为softinit.c是一个用户程序，他的CPL=3，而中断向量14中的DPL设置的是0，那么用户程序去调用一个中断异常处理程序，权限不够，那么会触发13异常。
+   这是因为softinit.c是一个用户程序，它CPL=3，而中断向量14中的DPL设置的是0（表示需要权限为0的软才能调用），所以会触发13异常。
 
 ## appendix:关于CPU和程序的执行
 
