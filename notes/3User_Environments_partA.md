@@ -360,9 +360,145 @@ asm volatile("int %1\n"
 
 ### Handling Interrupts and Exceptions
 
-首先我们来看一下x86的中断和异常机制，可以查看[80386的手册_中断和异常](https://pdos.csail.mit.edu/6.828/2018/readings/i386/c09.htm)，也可以参考本目录中的”appendix_80386手册.md“。在了解了中断和异常之后，我们来看一下需要实现的代码。
+#### 基础知识
 
-中断和异常主要是在`trapentry.S`和`trap.c`这两个文件中实现，首先我们需要对IDT表进行初始化操作，主要是通过`#define SETGATE(gate, istrap, sel, off, dpl) `这个宏定义来往IDT表中插入中断向量描述符：
+首先我们了解下x86的中断和异常机制，可以查看[80386的手册_中断和异常](https://pdos.csail.mit.edu/6.828/2018/readings/i386/c09.htm)，也可以参考本目录中的”appendix_80386手册.md“。
+
+异常和中断会造成**处理器从user mode 转换到kernel mode（CPL=0）**，这样子可以让user-mode code没有任何机会接近kernel的函数或者其他environment。在Intel中中断通常是由处理器外的异步事件产生，比如device I/O的提示等；而异常往往是由当前运行的代码同步产生的，比如除以0或者访问一个无效的地址。每一个中断或异常都有一个中断向量，中断向量是由中断的来源决定的：比如不同的device、error conditions、应用程序对内核的请求都将会产生一个中断向量。**x86处理器使用中断向量0~31来表示x86内部产生的同步异常（比如page fault是14），比31大的中断向量仅仅被用于software interrupts（比如由int 指令引发的）或者不同步的hardware interrupts（由外部devices产生）。**
+
+为了确保中断/异常发生时不是自主选择kernel的进入点以及进入的方式，而是在一定的控制条件下，从一些特定、提前定义好的进入点进入内核，那么处理器从以下两方面实现上述的保护：
+
+-  **Interrupt Descriptor Table**
+
+  x86允许通过256个不同中断或异常的进入点进入kernel，256个中断或异常都有唯一一个interrupt vector（从0~255）。CPU使用中断向量作为IDT表（IDT表建立在kernel-private 内存中）的index，然后从适当的table条目（ Interrupt Descriptor）中加载
+
+  - 要**加载到EIP（instruction pointer）寄存器**的值，这个值指向了处理指定异常的kernel处理代码；
+  - 要**加载到CS（code segement）寄存器**的值，值里面包含了第0-1位的特权等级值，异常处理程序正是运行在这个特权等级下。（JOS中所有的异常都是在kernel mode下处理的，特权等级全都为0）
+
+- **Task State Segment**
+
+  因为中断或异常处理的时候会从用户态模式转到内核态模式，那么在处理器调用异常处理程序之前，需要一块空间来保存old process的状态（比如EIP和CS），这样子异常处理程序执行完成之后可以通过old state，从中断发生离开时的那个地方重新开始。但是**这块空间必须是没有特权的user-mode code不能访问的**，否则用户恶意的代码或者bug会危及内存，因此会在内核空间中选择一个stack来存储。TSS（task state segement）这个结构中就指明了segement selector和stack的地址。那么之后会把SS、ESP、EFLAGS、CS、EIP的值以及可选的error code的值压入到新栈中。然后从IDT表中的Interrupt Descriptor中加载CS和EIP，并设置ESP和SS指向新的栈。
+
+  > TSS可能有其他用途，但是JOS只把TSS用于定义一个内核栈，这个栈是用户态模式转换到内核态模式时该选择的。JOS的内核态模式的特权等级为0，在进入内核的时候处理器使用TSS中的ESP0和SS0来定义kernel stack，TSS中的其他位则不用。
+
+下面取个例子，假设处理器正在一个user environment中处理代码，但是它遇到了一个divide指令要除以0，此时会产生异常，接下去：
+
+1. 处理器通过TSS中SS0和ESP0（在JOS中TSS保存着GD_KD和KSTACKTOP）来定义一个kernel stack；
+
+2. 处理器把相关参数压入从KSTACKTOP开始的栈中，如下
+   ![](./image/Lab3_12.png)
+
+   对于某些类型的x86异常，除了上述内容之外，可能还会压入error code（比如page fault）。那么这个栈看起来如下所示：
+
+   ![](./image/Lab3_13.jpg)
+
+3. 由于divide的中断向量是0，所以处理器会读取IDT的entry 0，然后设置CS:EIP指向相应的处理函数
+
+4. 处理函数开始处理异常，比如关掉user environment
+
+但是无论是在kernle mode下或者user mode下，都可能再次发生中断或者异常，假如在kernel mode下发生了中断或异常（CS寄存器低两位的值为0，比如说在异常或中断的处理过程中还会发生中断或者异常），那么此时会把更多的值压入相同的kernel stack，这样kernel就可以处理嵌套的异常（system call中会用到这种）。由于使用的是同一个stack，所以不用保存SS和ESP寄存器的值了，那么对于一个不用把error code压入的异常类型来说，栈变化如下：
+
+![](./image/Lab3_14.jpg)
+
+而对于有error code的异常来说，只需要再压入一个error code就可以。但是对于嵌套的异常来说，假如在异常处理过程又出现异常或中断，但是此时不能把old state的值压入栈中，那么处理器只是简单的重启。
+
+#### 实验---IDT表的建立
+
+现在我们要建立IDT表去处理0\~31的中断向量，`inc/trap.h`定义了中断和异常的中断向量，这些对于user-level的程序或者libraries是有用的，而`kern/trap.h` 是trap.c中一些函数的声明，但是这些函数仅仅属于kernel的，`kern/trap.h`中有以下这些内容：
+
+```
+#ifndef JOS_KERN_TRAP_H
+#define JOS_KERN_TRAP_H
+#ifndef JOS_KERNEL
+# error "This is a JOS kernel header; user programs should not #include it"
+#endif
+```
+
+我们要实现的整体控制流程如下图所示
+
+![](./image/Lab3_15.jpg)
+
+在`kern/trapentry.S`中每一个异常或中断都要有它自己的handler，而在`trap_init()`需要用这些handler的地址来初始化IDT。每一个handler都应该在stack上建立一个`struct Trapframe`，然后调用`trap.c`中的`trap()`函数，`trap()`函数中处理中断/异常或调用另一个特别的处理函数来处理。
+
+首先我们根据上述要求在`kern/trapentry.S`每一个异常或中断都要有自己的handler，那么下面我们来看一下这个文件
+
+```assembly
+#define TRAPHANDLER(name, num)            \
+  .globl name;    /* define global symbol for 'name' */ \
+  .type name, @function;  /* symbol type is function */   \
+  .align 2;   /* align function definition */   \
+  name:     /* function starts here */    \
+  pushl $(num);             \
+  jmp _alltraps
+
+#define TRAPHANDLER_NOEC(name, num)         \
+  .globl name;              \
+  .type name, @function;            \
+  .align 2;             \
+  name:               \
+  pushl $0;             \
+  pushl $(num);             \
+  jmp _alltraps
+
+```
+
+这个文件中有两个宏定义分别是`TRAPHANDLER`和`TRAPHANDLER_NOEC`，其实这两个宏定义的作用就是创建一个函数，函数名为传入的参数值name，另一个参数是中断向量，两个宏定义唯一的区别是前者会自动压入error code，而后者是压入一个0值来代替error code，所以我们需要根据这个中断/异常有无error code来选择哪个宏定义来创建（Hint:是否有error code 可以参考这个网址：https://pdos.csail.mit.edu/6.828/2018/readings/i386/s09_10.htm），接下去我们就根据这个链接的内容来创建handlers，这样子在`kern/trapentry.S`中每一个异常或中断自己的handler了。
+
+```assembly
+/*
+ * Lab 3: Your code here for generating entry points for the different traps.
+ */
+TRAPHANDLER_NOEC(divide_handler, T_DIVIDE)
+TRAPHANDLER_NOEC(debug_handler, T_DEBUG)
+TRAPHANDLER_NOEC(nmi_handler, T_NMI)
+TRAPHANDLER_NOEC(brkpt_handler, T_BRKPT)
+TRAPHANDLER_NOEC(oflow_handler, T_OFLOW)
+TRAPHANDLER_NOEC(bound_handler, T_BOUND)
+TRAPHANDLER_NOEC(illop_handler, T_ILLOP)
+TRAPHANDLER_NOEC(device_handler, T_DEVICE)
+TRAPHANDLER(dblflt_handler, T_DBLFLT)
+TRAPHANDLER(tss_handler, T_TSS)
+TRAPHANDLER(segnp_handler, T_SEGNP)
+TRAPHANDLER(stack_handler, T_STACK)
+TRAPHANDLER(gpflt_handler, T_GPFLT)
+TRAPHANDLER(pgflt_handler, T_PGFLT)
+TRAPHANDLER_NOEC(fperr_handler, T_FPERR)
+TRAPHANDLER_NOEC(align_handler, T_ALIGN)
+TRAPHANDLER_NOEC(mchk_handler, T_MCHK)
+TRAPHANDLER_NOEC(simderr_handler, T_SIMDERR)
+TRAPHANDLER_NOEC(syscall_handler, T_SYSCALL)
+```
+
+每一个handler都要建立自己的`struct Trapframe`，并且最后要调用trap()函数，而每一个handler都会调用`_alltraps`，所以我们需要在`_alltraps`中实现上述要求即可。 根据Lab中的提示，`_alltraps`实现如下
+
+```assembly
+/*
+ * Lab 3: Your code here for _alltraps
+ */
+_alltraps:
+  pushl %ds
+  pushl %es
+  pushal
+
+  movl $GD_KD, %eax
+  movl %eax, %ds
+  movl %eax, %es
+  pushl %esp
+
+  call trap
+```
+
+在`kern/trapentry.S`中已经实现了异常/中断的handler（也就相当添加了相应的entry pointer），那么下面我们需要在`trap_init()`函数中把这些给添加到IDT中。根据`kern/trapentry.S`中的提示
+
+```
+* You shouldn't call a TRAPHANDLER function from C, but you may
+ * need to _declare_ one in C (for instance, to get a function pointer
+ * during IDT setup).  You can declare the function with
+ *   void NAME();
+ * where NAME is the argument passed to TRAPHANDLER.
+```
+
+上述的个人理解是：在实现的`trap_init()`的时候，因为我们不能直接在这个函数里面调用`trapentry.S`中一系列handler函数，我们需要在C中先声明。再接下来我们看一下Lab中的提到使用`SETGATE`：`#define SETGATE(gate, istrap, sel, off, dpl) `，gate是IDT表的index入口（IDT相应的表项），istrap是选择是trap gate还是interrupt gate，sel为中断/异常处理器程序所在段的segement selector，off表示相对偏移量，dpl代表相应的权限等级（软件调用所需要的权限）。最终实现如下：
 
 ```c
 void
@@ -415,51 +551,21 @@ trap_init(void)
 }
 ```
 
-之后我们需要在` trapentry.S `添加不同的中断和异常调用的函数，当系统检测到一个异常之后，需要在这里完成一些压栈操作。
+> 上述有两个dpl设置为3，我们在后面可以看到为什么设置为3，当然设置为0对PartA来说没有啥影响。
 
-```assembly
-/*
- * Lab 3: Your code here for generating entry points for the different traps.
- */
-TRAPHANDLER_NOEC(divide_handler, T_DIVIDE)
-TRAPHANDLER_NOEC(debug_handler, T_DEBUG)
-TRAPHANDLER_NOEC(nmi_handler, T_NMI)
-TRAPHANDLER_NOEC(brkpt_handler, T_BRKPT)
-TRAPHANDLER_NOEC(oflow_handler, T_OFLOW)
-TRAPHANDLER_NOEC(bound_handler, T_BOUND)
-TRAPHANDLER_NOEC(illop_handler, T_ILLOP)
-TRAPHANDLER_NOEC(device_handler, T_DEVICE)
-TRAPHANDLER(dblflt_handler, T_DBLFLT)
-TRAPHANDLER(tss_handler, T_TSS)
-TRAPHANDLER(segnp_handler, T_SEGNP)
-TRAPHANDLER(stack_handler, T_STACK)
-TRAPHANDLER(gpflt_handler, T_GPFLT)
-TRAPHANDLER(pgflt_handler, T_PGFLT)
-TRAPHANDLER_NOEC(fperr_handler, T_FPERR)
-TRAPHANDLER_NOEC(align_handler, T_ALIGN)
-TRAPHANDLER_NOEC(mchk_handler, T_MCHK)
-TRAPHANDLER_NOEC(simderr_handler, T_SIMDERR)
-TRAPHANDLER_NOEC(syscall_handler, T_SYSCALL)
+最后我们使用`make grade`来测试一下，如下所示表示可以了！
 
+![](./image/Lab3_16.png)
 
+### question
 
-/*
- * Lab 3: Your code here for _alltraps
- */
-_alltraps:
-  pushl %ds
-  pushl %es
-  pushal
+1. 为什么要对每个中断向量设置不同的中断处理函数，而不是放在一个函数里面统一处理呢？
 
-  movl $GD_KD, %eax
-  movl %eax, %ds
-  movl %eax, %es
-  pushl %esp
+   因为不同中断或异常有不同的处理方式，TRAPHANDLER在栈中压入了中断向量trapno和错误码errno，在以方便后面根据异常/中断类型做对应处理。
 
-  call trap
-```
+2. 为什么`user/softinit.c`程序调用的是`int $14`，但是报的错是13呢（general protection fault）？
 
-
+   这是因为softinit.c是一个用户程序，他的CPL=3，而中断向量14中的DPL设置的是0，那么用户程序去调用一个中断异常处理程序，权限不够，那么会触发13异常。
 
 ## appendix:关于CPU和程序的执行
 
