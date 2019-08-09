@@ -235,9 +235,7 @@ Flags寄存器是一个32位寄存器，叫做EFLAGS。如下所示：
 |          |   Debug traps for this instruction   |
 |          |  Debug faults for next instruction   |
 |          |            NMI interrupt             |
-|  LOWEST  |            INTR interrupt            |
-
-
+|  LOWEST  |          L::INTR interrupt           |
 
 ## Interrupt Descriptor Table
 
