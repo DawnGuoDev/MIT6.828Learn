@@ -1,4 +1,4 @@
-在这个Lab中，我们将要实现基础的内核设施，让一个被保护的用户模式的environment成功运行（比如process）。我们将要去实现一个可以跟踪用户environment的数据结构，创建一个单独的用户environment并且把一个程序的镜像加载到里面，最后还要运行它。我们也会让JOS有能力去处理任何的实system call并且处理器它产生的异常。
+在这个Lab中，我们将要实现基础的内核设施，让一个被保护的用户模式的environment成功运行（比如process）。我们将要去实现一个可以跟踪用户environment的数据结构，创建一个单独的用户environment并且把一个程序的镜像加载到里面，最后还要运行它。我们也会让JOS有能力去处理任何的system call并且处理它产生的异常。
 
 > 上述中，术语`environment`和`process`是可以交换的，他们都指向一个抽象的东西，可以让你运行一个程序。我么使用`environment`而不是传统的`process`是为了强调JOS environment和UNIX进程提供的是不同的接口。所以在不好理解`environment`的时候，我们可以拿`process`的概念来理解。
 
