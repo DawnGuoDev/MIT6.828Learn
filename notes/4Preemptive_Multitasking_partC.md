@@ -1,4 +1,4 @@
-Part C: Preemptive Multitasking and Inter-Process communication (IPC)
+## Part C: Preemptive Multitasking and Inter-Process communication (IPC)
 
 partC主要是实现抢占式调度以及允许environment之间传递消息。
 
@@ -44,7 +44,7 @@ umain(int argc, char **argv)
 
 #### Interrupt discipline
 
-外部的中断被称为IRQs，这里有16个可能的IRQs，编号为0-15。从IRQ number到IDT entry的映射是不固定的。`picirq.c`中的`pic_init`将IRQs 0-15映射到IDT entries的IRQ_OFFSET到IRQ_OFFSET+1，同时`inc/trap.h`中，IRQ_OFFSET被定义为32，所以IDT entries的32-47是跟IRQs 0-15相对应的。举个例子clock interrupt是IRQ 0，那么对应的IDT表的位置就是IRQ_OFFSET+0，所以IDT[IRQ_OFFSET+0]就包含了clock interrupt handler的地址。由于我们IRQ_OFFSET被选择为32，所以设备的中断不会和处理器的异常/中断等冲突。
+外部的中断被称为IRQs，这里有16个可能的IRQs，编号为0-15。从IRQ number到IDT entry的映射是不固定的。`picirq.c`中的`pic_init`将IRQs 0-15映射到IDT entries的IRQ_OFFSET到IRQ_OFFSET+15，同时`inc/trap.h`中，IRQ_OFFSET被定义为32，所以IDT entries的32-47是跟IRQs 0-15相对应的。举个例子clock interrupt是IRQ 0，那么对应的IDT表的位置就是IRQ_OFFSET+0，所以IDT[IRQ_OFFSET+0]就包含了clock interrupt handler的地址。由于我们IRQ_OFFSET被选择为32，所以设备的中断不会和处理器的异常/中断等冲突。
 
 > 在早期PC机运行MS-DOS的时候，IRQ_OFFSET是0，这个将会在处理硬件设备中断和处理处理器异常之间造成很大混淆。（设备中断、硬件中断、外部中断这三者概念上差不多，就目前来看的话）
 
