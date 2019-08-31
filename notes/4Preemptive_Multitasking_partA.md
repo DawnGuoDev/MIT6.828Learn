@@ -458,7 +458,7 @@ for (;;);
 
 ![](./image/Lab4_2.jpg)
 
-#### System Calls for Environment Creation（environment创建时的system call）
+### System Calls for Environment Creation（environment创建时的system call）
 
 现在我们的kernel有能力运行多个user-level environment并且可以在它们之间切换，但是只能运行kernel 初始化的environment。在这个实验中，我们将会实现必要的JOS system call来允许user environment创建和开始其他新的user environment。
 
