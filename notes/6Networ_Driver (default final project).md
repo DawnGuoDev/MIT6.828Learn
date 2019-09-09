@@ -1,3 +1,7 @@
+## 进度
+
+把手册看一下，然后再继续看一下PCI
+
 ## Introduction
 
 在实现完Lab5之后，我们有了一个文件系统，然而没有network stack的OS是没有灵魂的OS。所以在这个Lab中，我们准备写一个network interface card的驱动。这网卡是基于Intel 82540EM芯片，也被称为E1000。network card driver 可以让我们的OS连上因特网。在Lab6的，已经提供了一个network stack和network server。相关新的代码在`net/`目录和`kern/`中。下面来说说相关的实现事项：
@@ -149,18 +153,119 @@ struct Dev devsock =
 
 有一些操作是socket特有的（比如`connect`、`accept`等），但是`read`、`write`和`close`等操作使用`lib/fd.c`中正常文件描述符设备分派代码。跟file server内部为所有打开的文件维持不同的ID一样，IwIP为所有打开的sockets分配不同的ID。在file server和network server中，我们使用存储在`struct Fd`中的信息把per-environment的文件描述符映射到不同的ID空间。
 
-尽管file server和network server中的IPC dispatchers可能表现的差不多，但是他们也有一个根本的区别。
+尽管file server的IPC dispatchers和network server的IPC dispatcher可能表现的差不多，但是他们也有一个根本的区别。BSD socket calls比如`accept`和`recv`可以无限期阻塞。如果dispatcher让IwIP执行这些阻塞calls中的一个，那么dispatcher也会阻塞，这样子在一个时间只能有一个network call。dispatcher为每一个进来的IPC message创建一个线程，然后在新创建的线程中处理请求。如果线程阻塞了，那么只有这个线程sleep而其他线程继续运行。
 
-
-
-
+除了core network environment之外，还有3个帮助的environments。除了从user application接受message之外，core network environment dispatch也可以从input enviorment和timer environment中接收messages。
 
 ### The Output Environment
 
+在服务user environment的socket calls的时候，IwIP将会产生让网卡transmit的packets。LwIP使用`NSREQ_OUTPUT` IPC messag把每个需要transmit的packet发送给output helper environment，这个IPC message的页面参数中附带了这个packet。output environment负责接收这些messages，通过system call接口把packet转发到设备驱动上。
+
 ### The Input Environment
+
+从网卡处接收到packet需要注入lwIP。对于设备驱动接收到的每一个packet，input environment使用kernel system calls把每一个packet移除kernel space，之后使用`NSREQ_INPUT`IPC message把这个packet发送给core server environment。
+
+因为JOS同步接收IPC message和轮询或等待来自设备驱动的packet是很困难的，所以packet输入功能从core network environment分离出来了。在JOS中没有一个`select`system call，这个system call允许environments去监控多个输入源来识别准备处理哪一个输入。
+
+我们需要同时实现`net/input.c`和`net/output.c`，这个主要是因为这两个文件的实现依赖于我们的system call接口。在实现设备驱动和system call接口之后，我们需要实现这两个helper environment。
 
 ### The Timer Environment
 
-## 个人小目标实现
+Timer environment定时发送类型为`NSREQ_TIMER` 的messages给core network server，来告诉core network server定时器已经过期了。LwLP使用timer messages来实现不同的网络超时。
 
-驱动实现这个网卡驱动，顺便看一下IDE DISK的实现。
+### 小总结
+
+上面大致讲述了一下整个网络功能实现的大致流程，我们拿web服务作为例子的时候，当我们向这个web服务进请求的时候，那么请求的数据包最终是先由网卡接收--->接收之后使用system call 接口传送到了input helper environment--->通过IPC通信传送到core network server--->core network server的dispatcher通过IPC再把收到的packet传给web服务--->web服务对数据处理之后可能会需要返回一些数据--->这些数据通过IPC再次发送给core network environment--->core network environment的lwIP对数据进行封装--->之后再通过IPC发送给output helper environment--->output helper environment通过system call接口发送给网卡。
+
+## Part A: Initialization and transmitting packets
+
+现在的JOS kernel还没有时间概念，所以我们需要添加一个。现在有一个硬件每10ms会产生一个clock interrupt，在每一个clock interrupt的时候，我们将会增加一个变量来表明时间前进了10ms。这个在`kern/time.c`中实现了，但是还没有完全整合到kernel中。
+
+```c
+
+```
+
+
+
+### The Network Interface Card
+
+编写一个驱动需要深入了解硬件和提供给软件的接口。Lab文本将提供如何与E1000交互的高级概述，但是在写驱动的时候需要充分利用好Intel的手册。浏览关于E1000的Intel的软件开发者手册，这个手册包含了几个紧密相关的Ethernet控制器，qemu仿真了82540EM。
+
+- 浏览chapter 2来获得对这个设备的整体印象；
+- 对chapte3和14以及4.1章要熟悉一点，才能写驱动；
+- 使用chapter 13作为参考
+- 其他的chapters主要是讲E1000的组件，但是你的设备不会跟这些组件交互
+
+不用太担心这些细节，对这个文档是如何组织的有一个感觉就好，这样下面我们才可以找到相关的内容。在阅读的这个手册的时候，需要记住E1000是一个复杂的设备，它有很多先进的特性。但是运作一个E1000设备仅仅需要部分特性以及只需要network interface card提供的部分接口。仔细思考如何用最简单的方法与这个网卡交互，同时强烈推荐在使用先进的特性之前先使用一个最基础的驱动程序。
+
+#### PCI Interface
+
+E1000是一个PCI设备，那么也就意味着它可以插入主板的PCI总线上。PCI总线有地址、数据和
+
+中断行，并且允许CPU和PCI设备交流以及PCI设备读写内存。在使用PCI设备之前，需要先发现和初始化PCI设备。发现是PCI总线上寻找相关devices的过程。初始化是分配IO和内存空间以及协商设备使用的IRQ line的过程。
+
+我们在`kern/pci.c`中提供了PCI code。为了在boot阶段执行PCI的初始化，PCI code沿着PCI 总线来寻找设备。当找到一个设备之后，读取该设备的vendor ID和device ID，然后使用这两个ID作为key来搜索`pci_attach_vendor`数组。这个数组是由一系列的 `struct pci_driver` 条目组成
+
+```c
+// pci_attach_vendor matches the vendor ID and device ID of a PCI device. key1
+// and key2 should be the vendor ID and device ID respectively
+struct pci_driver pci_attach_vendor[] = {
+  { 0, 0, 0 },
+};
+
+// PCI driver table
+struct pci_driver {
+  uint32_t key1, key2;
+  int (*attachfn) (struct pci_func *pcif);
+};
+```
+
+如果发现该设备的vendor ID和 device ID跟数组中的一个条目匹配，PCI code调用该条目中的`attachfn`函数来执行设备初始化（Hint：结合上面的结构体）。设备也可以由类别来是识别，这个就是`kern/pci.c`中另一个驱动表的目的了。
+
+attach function通过传入一个PCI function来初始化（Hint：结合上面的结构体）。一个PCI card可以使用很多函数，但是E1000只有一个。下面是我们如何在JOS中表示一个PCI函数的
+
+```c
+struct pci_func {
+    struct pci_bus *bus;  // Primary bus for bridges
+
+    uint32_t dev;
+    uint32_t func;
+
+    uint32_t dev_id;
+    uint32_t dev_class;
+
+    uint32_t reg_base[6];
+    uint32_t reg_size[6];
+    uint8_t irq_line;
+};
+```
+
+
+
+
+
+#### Memory-mapped I/O
+
+#### DMA
+
+### Transmitting Packets
+
+#### C Structures
+
+### Transmitting Packets: Network Server
+
+## Part B: Receiving packets and the web server
+
+### Receiving Packets
+
+### Receiving Packets: Network Server
+
+### The Web Server
+
+
+
+## 总结
+
+1. 驱动实现这个网卡驱动，顺便看一下IDE DISK的实现。
+2. 画一下qemu的网络拓扑图
+3. 总结一下整个网络通信的过程
