@@ -638,20 +638,44 @@ E1000的发送和接收功能基本上是相互独立的，所以我们可以一
 
 确保发送描述符数组是线性以及这个数组长度的限制。由于TDLEN必须是128-byte对齐的，每一个发送描述符都是16bytes，所以你的发送描述符数组得是8个发送描述符的整数倍。然而不要使用超过64个描述符，否则我们的测试程序将无法测试发送循环溢出。
 
-对于TCTL、COLD，你可以采用全双工操作。对于TIPG，请参考section 13.4.34中表13-77描述的默认值，这个值是针对IEEE 802.3标准IPG的，不要使用section 14.5 中表的值。
+对于TCTL.COLD，你可以采用全双工操作。对于TIPG，请参考section 13.4.34中表13-77描述的默认值，这个值是针对IEEE 802.3标准IPG的，不要使用section 14.5 中表的值。
 
 针对上面所描述的和实现的要求，大致流程如下所示：
 
-1. 实现整个发送描述符队列和发送描述符所指的packet buffer。在这块当中，我们首先根据开发者文档实现所需要的结构体，包括发送描述符、TDBAL、TDBAH、TDLEN、TDH、TDT、TCTL、TIPG（发送描述符的格式可以参考3.3.3，后面的寄存器参考13），之后初始化整个发送描述符队列；
-2. 在实现相应的队列之后，再对寄存器的值进行初始化；
+1. 实现整个发送描述符队列和发送描述符所指的packet buffer。在这块当中，我们首先根据开发者文档实现所需要的结构体，包括发送描述符、TDBAL、TDBAH、TDLEN、TDH、TDT、TCTL、TIPG（发送描述符的格式可以参考3.3.3，后面的寄存器参考13），之后初始化整个发送描述符队列；（Hint：可以参考`e1000_hw.h`）
+2. 在实现相应的队列之后，再对寄存器的值进行初始化，对于其他寄存器参考section 3.4和section ,对于TIPG，请参考section 13.4.34中表13-77描述的默认值；
 
+----
 
+上面已经对发送功能进行了初始化，下面我们编写发送packet的代码同时编写相应的system call让user space可以通过system call来调用。为了发送packet，你必须在发送队列的末尾添加这个packet，这意味着把packet data拷贝到下一个packet buffer然后更新TDT（transmit descriptor tail）寄存器来通知网卡这里有packet在transmit queue了。需要注意的是，TDT是一个transmit  descriptor数组而不是字节偏移量。
 
+但是发送队列只有那么大，如果网卡有下一个要发送的packet，但是发送队列已经满了，那该怎么办呢？为了检测这种情况，需要从E1000获得一些反馈。不幸运的是，你不能仅仅只使用TDH（transmit descriptor head）寄存器，手册中明确表明在软件层面读取这个寄存器是不可信赖的。如果你在transmit descriptor的cmd成员变量中设置了RS位，那么当网卡准备使用这个descriptor发送packet的时候，那么网卡将会在这个descriptor的status成员变量中设置DD位。如果descriptor的DD（Descriptor Done）位被设置了，那么；使用这个descriptor和使用它发送另一个packet是安全的。
 
+但是假如用户调用system call，但是下一个descriptor的DD位没有被设置，这也就表明发送队列已经满了，那么该怎么办呢？所以我们需要决定该怎么解决这种情况，你可以简单的丢弃这个packet。网络协议对丢包有相应的弹性，但是如果丢了一大堆包那么网络协议可能也无法恢复了。相反，你可以告诉user environment重试，这就很像`sys_ipc_try_send`中的那样，这对回推environment产生的数据有好处。
+
+编写一个函数来发送一个数据包，大致流程如下：检查下一个descriptor是不是free，假如是的话将数据拷贝到下一个descriptor中，然后更新TDT。同时记得处理发送队列已满的情况。
 
 ### Transmitting Packets: Network Server
 
-现在设备驱动的发送端已经有了一个system call接口，那么是时候来发送packet了。
+现在设备驱动的发送端已经有了一个system call接口，那么是时候来发送packet了。output helper environmentd的目标是循环执行下面这些事：从core network server接受`NSREQ_OUTPUT` IPC messages，然后使用system call发送IPC message中带着的packet给network device驱动（这个system call是上面添加的）。`NSREQ_OUTPUT`是`net/lwip/jos/jif/jif.c`中的`low_level_output`函数发送的，这个函数将lwip stack绑定在JOS的network system上。每一个IPC都将带有由`union Nsipc`组成的一个页，这个页中有一个packet存在它的`field`领域中。
+
+```c
+union Nsipc { 
+   	......
+	struct jif_pkt pkt;
+    // Ensure Nsipc is one page
+    char _pad[PGSIZE]; 
+}
+
+struct jif_pkt {
+    int jp_len;
+    char jp_data[0];
+};
+```
+
+`jp_len`表示packet的长度。IPC page上所有接下来的字节都是用来存packet contents。使用长度为0的数组作为结构体最后的元素，比如`jp_data[0]`，是C语言中的一个常见技巧，表示这个buffer长度是未预先决定的。如果C不会进行数组边界检查，只要你确保结构体后面有足够多的未使用的内存，你就可以把`jp_data`当做任何大小的数组。
+
+当core network server使用IPC给output environment 发送packet的时候，如果发送 packet的system call因为驱动没有更多的buffer space来存放packet而导致output environment挂起，那么core network server将会等待直到output server接受了IPC call。
 
 ## Part B: Receiving packets and the web server
 
@@ -670,8 +694,7 @@ E1000的发送和接收功能基本上是相互独立的，所以我们可以一
 1. 驱动实现这个网卡驱动，顺便看一下IDE DISK的实现。
 2. 画一下qemu的网络拓扑图
 3. 总结一下整个网络通信的过程
-
-
+4. sys_yield这个系统调用再看一下
 
 ## 附录
 
