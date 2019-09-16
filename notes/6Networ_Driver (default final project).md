@@ -175,7 +175,7 @@ Timer environment定时发送类型为`NSREQ_TIMER` 的messages给core network s
 
 上面大致讲述了一下整个网络功能实现的大致流程，我们拿web服务作为例子的时候，当我们向这个web服务进请求的时候，那么请求的数据包最终是先由网卡接收--->接收之后使用system call 接口传送到了input helper environment--->通过IPC通信传送到core network server--->core network server的dispatcher通过IPC再把收到的packet传给web服务--->web服务对数据处理之后可能会需要返回一些数据--->这些数据通过IPC再次发送给core network environment--->core network environment的lwIP对数据进行封装--->之后再通过IPC发送给output helper environment--->output helper environment通过system call接口发送给网卡。
 
-## Part A: Initialization and transmitting packets
+## Set time notion
 
 现在的JOS kernel还没有时间概念，所以我们需要添加一个。现在有一个硬件每10ms会产生一个clock interrupt，在每一个clock interrupt的时候，我们将会增加一个变量来表明时间前进了10ms。上述所描述的在`kern/time.c`中实现了，但是还没有完全整合到kernel中。
 
@@ -247,7 +247,7 @@ Welcome to the JOS kernel monitor!
 	......
 ```
 
-### The Network Interface Card
+## The Network Interface Card
 
 编写一个驱动需要深入了解硬件和提供给软件的接口。Lab文本将提供如何与E1000交互的高级概述，但是在写驱动的时候需要充分利用好Intel的手册。浏览关于E1000的Intel的软件开发者手册，这个手册包含了几个紧密相关的Ethernet控制器，qemu仿真了82540EM。
 
@@ -260,7 +260,7 @@ Welcome to the JOS kernel monitor!
 
 对于上述chapter 2的内容，较为详细的话可以看[附录](#附录)
 
-#### PCI Interface
+### PCI Interface
 
 E1000是一个PCI设备，那么也就意味着它可以插入主板的PCI总线上。PCI总线有地址、数据和中断行，并且允许CPU和PCI设备交流以及PCI设备读写内存。在使用PCI设备之前，需要先发现和初始化PCI设备。发现是在PCI总线上寻找相关devices的过程。**初始化是分配IO和内存空间以及协商设备使用的IRQ line的过程。**
 
@@ -307,7 +307,7 @@ struct pci_func {
 
 当一个设备的attach function被调用的时候，设备已经被找到但是没有使能。这也就意味着PCI code还没有决定分配给设备的资源，比如地址空间和IRQ line。因此`reg_base`、`reg_size`和`irq_line`还没有被填充。attch function需要调用`pci_func_enable`来使能设备，分配这些资源，然后把这些资源填充到`struct pci_func`中。
 
-但是我们目前的代码中还没法调用attach function，因为数组中暂时没有对应设备的相关信息。首先在`kern/pci.c`中`pci_attach_vendor`数组中添加一个新的条目，这样当匹配到一个PCI device的时候会触发添加的函数。确保在`{0,0,0}`条目之前将这个新条目添加进去，因为`{0,0,0}`这个条目代表着这个数组的结束。我们可以在开发手册的5.2节找到82540EM的 vendor ID和device ID。在启动的时候，你也会看到JOS扫描PCI bus，并把相关的ID打印出来。下面在`kern/e100.h`中添加如下内容：
+但是我们目前的代码中还没法调用attach function，因为数组中暂时没有对应设备的相关信息。首先在`kern/pci.c`中`pci_attach_vendor`数组中添加一个新的条目，这样当匹配到一个PCI device的时候会触发添加的函数。确保在`{0,0,0}`条目之前将这个新条目添加进去，因为`{0,0,0}`这个条目代表着这个数组的结束。我们可以在开发手册的5.2节找到82540EM的 vendor ID和device ID。在启动的时候，你也会看到JOS扫描PCI bus，并把相关的ID打印出来。下面在`kern/e100.h`中添加如下内容（因为练习提到的是fill实现的内容填写到`kern/e1000.h`和`kern/e1000.c`）
 
 ```c
 #include <kern/pci.h>
@@ -319,7 +319,7 @@ int pci_e1000_attach(struct pci_func *pcif);
 #define E1000_VENDOR_ID_82540EM 0x8086
   
 /* PCI Device IDs */
-#define E1000_DEV_ID_82540EM             0x100E
+#define E1000_DEV_ID_82540EM 0x100E
 ```
 
 之后在`kern/e1000.c`中添加如下内容
@@ -349,20 +349,13 @@ struct pci_driver pci_attach_vendor[] = {
 
 现在通过`pci_func_enable`来使能E1000即可，也就相当于在我们实现的attach function中调用该函数，这样就能使能E1000了。
 
-```c
-int pci_e1000_attach(struct pci_func *pcif){
-  pci_func_enable(pcif);
-  return 1;
-}
-```
-
 当你启动kernel的时候，你将会看见kernel打印出了 PCI function of the E1000 card was enable。你的代码也能通过`make grade`中的`pci attach`测试。
 
 ```bash
 pci attach: OK (2.2s)
 ```
 
----
+#### PCI总结
 
 下面我们来看一下整个PCI初始化的流程，在讲解整个流程之间先来了解一下PCI的相关知识：
 
@@ -418,8 +411,7 @@ pci_scan_bus(struct pci_bus *bus)
     totaldev++;
 
     struct pci_func f = df;
-    for (f.func = 0; f.func < (PCI_HDRTYPE_MULTIFN(bhlc) ? 8 : 1);
-         f.func++) {
+    for (f.func = 0; f.func < (PCI_HDRTYPE_MULTIFN(bhlc) ? 8 : 1); f.func++) {
       struct pci_func af = f;
 
       af.dev_id = pci_conf_read(&f, PCI_ID_REG);
@@ -534,10 +526,9 @@ pci_func_enable(struct pci_func *f)
   }     
   	......
 }
-
 ```
 
-#### Memory-mapped I/O（MMIO）
+### Memory-mapped I/O（MMIO）
 
 软件层面通过MMIO跟E1000进行交互。这种方式你之前在JOS中看到过两次：CGA console和LAPIC都是通过写和读”memory“来控制和查询的设备。但是这些写和读没有到DRAM中去，他们是直接到设备中去了。
 
@@ -547,7 +538,7 @@ pci_func_enable(struct pci_func *f)
 
 Hint：你需要大量的常量，比如寄存器的位置和掩码。假如从直接从开发手册中实现这些值将会很容易出错，一旦出错之后调试就更崩溃了。所以我们推荐使用qemu的 [e1000_hw.h](https://pdos.csail.mit.edu/6.828/2018/labs/lab6/e1000_hw.h)头文件作为一个指导。但是我们又不推荐你把这个里面所有的值拷贝下来，因为这个头文件定义了比我们所需要还要多的内容同时可能没有定义你想要的内容，但是还是值得参考的。
 
-按照上述的要求，我们从`e1000_hw.h`文件中截取这个exercise所需要的内容，具体可以看我的Github（上个exercise中我们就有使用一部分）
+按照上述的要求，我们从`e1000_hw.h`文件中截取这个exercise所需要的内容到`kern/e1000.h`，具体可以看我的Github（上个exercise中我们就有使用一些）
 
 ```c
 	......
@@ -560,14 +551,20 @@ Hint：你需要大量的常量，比如寄存器的位置和掩码。假如从�
 
 ```c
 volatile void *e1000_mmio;
+#define E1000REG(offset)  (void *)(e1000_mmio+offset)
 
 // LAB 6: Your driver code here
 int pci_e1000_attach(struct pci_func *pcif){
-  pci_func_enable(pcif); 
+  // pci e1000 init
+  pci_func_enable(pcif);
+  cprintf("PCI BAR information: 0x%x, 0x%x\n", pcif->reg_base[0], pcif->reg_size[0]);
+
+  //e1000 set mmio
   e1000_mmio = (void *)mmio_map_region(pcif->reg_base[0], pcif->reg_size[0]);
-  cprintf("PCI E1000 status is 0x%x\n", *(uint32_t *)(e1000_mmio+E1000_STATUS));
+  cprintf("PCI E1000 status is 0x%x\n", *(uint32_t *)E1000REG(E1000_STATUS));
+
   return 1;
-}      
+}
 ```
 
 最终实验的测试结果如下所示：
@@ -578,7 +575,7 @@ PCI E1000 status is 0x80080783
 
 > C语言volatile关键词影响编译器编译的结果，编译器有一种技术叫做数据流分析，分析程序中的变量在哪里赋值、在哪里使用、在哪里失效，分析结果可以用于常量合并，常量传播等优化，进一步可以消除一些代码。但有时这些优化不是程序所需要的，这时可以用volatile关键字禁止做这些优化。当要求使用volatile声明变量值的时候，系统总是重新从它所在的内存读取数据，即使它前面的指令刚刚从该处读取过数据。
 
-#### DMA
+### DMA
 
 可以想象通过读写E1000的寄存器来传递和接收packets，但是这种方式会很慢，同时要求E1000内部缓存packet数据。相反，E1000使用Direct Memory Access（DMA）从内存中直接读写packet data，这种方式不用调用CPU。驱动负责给发送和接收队列分配内存、设置DMA描述符和使用队列所处的位置来配置E1000，但是驱动在这些操作之后都将会是异步的。为了传输一个packet，驱动将这个packet拷贝到传输队列中的下一个DMA描述符中，然后通知E1000下一个packet已经到了；当到了发送这个packet的时候，E1000将这些数据从DMA描述符拷贝出来。类似的，当E1000收到一个packet，E1000将会把这个packet拷贝到接收队列的下一个DMA描述符中，这样驱动程序可以在下一次机会来的时候从这个DMA描述符读取内容。
 
@@ -586,11 +583,11 @@ PCI E1000 status is 0x80080783
 
 队列被实现成循环数组，这也就意味着当网卡或者驱动到达数组末尾的时候，将会回到开头。两个队列都有一个头指针和一个尾指针，两个指针之间的队列内容是描述符。硬件总是从头开始消耗描述符并移动描述符指针，然而驱动程序总是会增加描述符并移动尾指针。在传输队列中的描述符表示等待要发送的描述符（因此一个稳定的状态是传输队列将会为空）。对于接收队列来说，网卡可以将接收到的packet存放到空闲的描述符中（因此一个稳定的状态是接收队列由所有可获得的接收到的描述符组成）。正确的更新尾指针寄存器而不混淆E1000是有技巧的请小心点。
 
-**小总结**
+#### DMA总结
 
 E1000中采用的DMA来传输和收发数据，在发送packet的时候，驱动程序会把packet拷贝到memory，然后通知E1000，之后DMA将这个packet发送出去；在接收到packet之后，DMA会把接收到的packet拷贝到内存接收队列中，之后驱动程序从这块驱动读取相应的内容。
 
-### Transmitting Packets
+## Transmitting Packets
 
 E1000的发送和接收功能基本上是相互独立的，所以我们可以一次处理一个。我们首先会实现发送packet，因为如果没有首先发送“I'm here”packet，我们是不能测试接收功能的。
 
@@ -645,6 +642,182 @@ E1000的发送和接收功能基本上是相互独立的，所以我们可以一
 1. 实现整个发送描述符队列和发送描述符所指的packet buffer。在这块当中，我们首先根据开发者文档实现所需要的结构体，包括发送描述符、TDBAL、TDBAH、TDLEN、TDH、TDT、TCTL、TIPG（发送描述符的格式可以参考3.3.3，后面的寄存器参考13），之后初始化整个发送描述符队列；（Hint：可以参考`e1000_hw.h`）
 2. 在实现相应的队列之后，再对寄存器的值进行初始化，对于其他寄存器参考section 3.4和section ,对于TIPG，请参考section 13.4.34中表13-77描述的默认值；
 
+下面我们修改`kern/e1000.h`文件，添加如下内容（完全的内容可以去看看我的github的地址哈）
+
+```c
+/* functions */
+void e1000_transmit_init();
+
+/* transmit queue */
+#define E1000_MAXTXQUEUE 56
+#define E1000_TXPKTSIZE 1518
+
+/* Register Set */
+#define E1000_STATUS   0x00008  /* Device Status - RO */
+#define E1000_TDBAL    0x03800  /* TX Descriptor Base Address Low - RW */
+#define E1000_TDBAH    0x03804  /* TX Descriptor Base Address High - RW */
+#define E1000_TDLEN    0x03808  /* TX Descriptor Length - RW */
+#define E1000_TDH      0x03810  /* TX Descriptor Head - RW */
+#define E1000_TDT      0x03818  /* TX Descripotr Tail - RW */
+#define E1000_TCTL     0x00400  /* TX Control - RW */
+#define E1000_TIPG     0x00410  /* TX Inter-packet gap -RW */
+
+/* Register Bit Masks */
+/* Transmit Descriptor bit definitions */
+#define E1000_TXD_CMD_EOP    0x01 /* End of Packet */
+#define E1000_TXD_CMD_IFCS   0x02 /* Insert FCS (Ethernet CRC) */
+#define E1000_TXD_CMD_IC     0x04 /* Insert Checksum */
+#define E1000_TXD_CMD_RS     0x08 /* Report Status */
+#define E1000_TXD_CMD_RPS    0x10 /* Report Packet Sent */
+#define E1000_TXD_CMD_DEXT   0x20 /* Descriptor extension (0 = legacy) */
+#define E1000_TXD_CMD_VLE    0x40 /* Add VLAN tag */
+#define E1000_TXD_CMD_IDE    0x80 /* Enable Tidv register */
+#define E1000_TXD_STAT_DD    0x01 /* Descriptor Done */
+#define E1000_TXD_STAT_EC    0x02 /* Excess Collisions */
+#define E1000_TXD_STAT_LC    0x04 /* Late Collisions */
+#define E1000_TXD_STAT_TU    0x08 /* Transmit underrun */
+
+/* struct */
+// transmit descriptor
+struct e1000_tdesc{
+  uint64_t addr;
+  uint16_t length;
+  uint8_t cso;
+  uint8_t cmd;
+  uint8_t status;
+  uint8_t css;
+  uint16_t special;
+}__attribute__((packed));
+
+// transmit descriptor base address low
+struct e1000_tdbal{
+  uint32_t tdbal;
+};
+
+// transmit descriptor base address high
+struct e1000_tdbah{
+  uint32_t tdbah;
+};
+
+// transmit descriptor length
+struct e1000_tdlen{
+  uint32_t zero     : 7;
+  uint32_t len      : 13;
+  uint32_t reserved : 12;
+};
+
+// transmit descriptor head
+struct e1000_tdh{
+  uint16_t tdh;
+  uint16_t reserved;
+};
+
+// transmit descriptor tail
+struct e1000_tdt{
+  uint16_t tdt;
+  uint16_t reserved;
+};
+
+// transmit control
+struct e1000_tctl{
+  uint32_t        : 1;
+  uint32_t en     : 1;
+  uint32_t        : 1;
+  uint32_t psp    : 1;
+  uint32_t ct     : 8;
+  uint32_t cold   : 10;
+  uint32_t swxoff : 1;
+  uint32_t        : 1;
+  uint32_t rtlc   : 1;
+  uint32_t nrtu   : 1;
+  uint32_t        : 6;
+};
+
+// transmit IPG
+struct e1000_tipg{
+  uint32_t ipgt     : 10;
+  uint32_t ipgr1    : 10;
+  uint32_t ipgr2    : 10;
+  uint32_t reserved : 2;
+};
+```
+
+>在修改头文件中需要注意以下几点：
+>
+>1.队列的最大长度不能超过64，我在实验过程中设置为64，在下一个联系的测试结果中无法测试通过；
+>
+>2.相应的位掩码需要修改，直接从`e1000_hw.h`中把相应的内容拷贝过来，是不符合的；
+
+下面我们修改`kern/e1000.c`中的内容，
+
+```c
+// transmit descriptor queue
+struct e1000_tdesc e1000_tdesc_queue[E1000_MAXTXQUEUE];
+
+// transmit paackets buffer
+char e1000_tx_pkt_buffer[E1000_MAXTXQUEUE][E1000_TXPKTSIZE];
+
+struct e1000_tdh *tdh;
+struct e1000_tdt *tdt;
+
+// LAB 6: Your driver code here
+int pci_e1000_attach(struct pci_func *pcif){
+    ......
+  // e1000 transmit init
+  e1000_transmit_init();
+    
+  return 1;
+}  
+// refer to section 14.5
+void e1000_transmit_init(){
+  int i;
+
+  struct e1000_tdbal *tdbal;
+  struct e1000_tdbah *tdbah;
+  struct e1000_tdlen *tdlen;
+  struct e1000_tctl *tctl;
+  struct e1000_tipg *tipg;
+
+  for(i = 0; i < E1000_MAXTXQUEUE; i++){
+    e1000_tdesc_queue[i].addr = PADDR(e1000_tx_pkt_buffer[i]);
+    e1000_tdesc_queue[i].cmd  |= E1000_TXD_CMD_RS;
+    e1000_tdesc_queue[i].status |= E1000_TXD_STAT_DD;
+  }
+
+  tdbal = (struct e1000_tdbal *)E1000REG(E1000_TDBAL);
+  tdbal->tdbal = PADDR(e1000_tdesc_queue);
+
+  tdbah = (struct e1000_tdbah *)E1000REG(E1000_TDBAH);
+  tdbah->tdbah = 0;
+
+  tdlen = (struct e1000_tdlen *)E1000REG(E1000_TDLEN);
+  tdlen->len = E1000_MAXTXQUEUE;
+
+  tdh = (struct e1000_tdh *)E1000REG(E1000_TDH);
+  tdh->tdh = 0;
+
+  tdt = (struct e1000_tdt *)E1000REG(E1000_TDT);
+  tdt->tdt = 0;
+
+  tctl = (struct e1000_tctl *)E1000REG(E1000_TCTL);
+  tctl->en = 1;
+  tctl->psp = 1;
+  tctl->ct = 0x10;
+  tctl->cold = 0x40;
+
+  tipg = (struct e1000_tipg *)E1000REG(E1000_TIPG);
+  tipg->ipgt = 10;
+  tipg->ipgr1 = 4;
+  tipg->ipgr2 = 6;
+}
+```
+
+运行`make E1000_DEBUG=TXERR,TX qemu`的时候，如果你使用的是课程的qemu，当你设置TDT寄存器的时候（这一步发生在设置TCTL.EN之前）那么你将会看见一条"e1000: tx disabled"消息，但是没有进一步的"e1000"的消息。
+
+```bash
+e1000: tx disabled
+```
+
 ----
 
 上面已经对发送功能进行了初始化，下面我们编写发送packet的代码同时编写相应的system call让user space可以通过system call来调用。为了发送packet，你必须在发送队列的末尾添加这个packet，这意味着把packet data拷贝到下一个packet buffer然后更新TDT（transmit descriptor tail）寄存器来通知网卡这里有packet在transmit queue了。需要注意的是，TDT是一个transmit  descriptor数组而不是字节偏移量。
@@ -655,7 +828,108 @@ E1000的发送和接收功能基本上是相互独立的，所以我们可以一
 
 编写一个函数来发送一个数据包，大致流程如下：检查下一个descriptor是不是free，假如是的话将数据拷贝到下一个descriptor中，然后更新TDT。同时记得处理发送队列已满的情况。
 
-### Transmitting Packets: Network Server
+首先我们实现packet发送函数
+
+```c
+// transmit packet
+int e1000_transmit_packet(char *data, int len){
+  uint16_t tail = tdt->tdt;
+
+  // the transmit queue is full
+  if(!(e1000_tdesc_queue[tail].status & E1000_TXD_STAT_DD)){
+    return -1;
+  }
+
+  e1000_tdesc_queue[tail].length = len;
+  e1000_tdesc_queue[tail].status &= ~E1000_TXD_STAT_DD;
+  e1000_tdesc_queue[tail].cmd |= (E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS);
+  memcpy(e1000_tx_pkt_buffer[tail], data, len);
+  tdt->tdt = (tail + 1) % E1000_MAXTXQUEUE;
+
+  return 0;
+}
+```
+
+> 这边需要注意的是描述符cmd域的相应位的设置，一个是EOP表示这是最后一个packet，RS设置之后，那么网卡在发送完数据之后将会设置STAT_DD位。
+
+下面测试发送数据包的代码也就是上述实现的函数。从kernel直接调用发送函数来发送一些数据包，这些数据包不用符合任何网络协议，因为我们仅仅是测试这个函数。所以我们在发送初始化完成之后调用该函数如下所示：
+
+```c
+// LAB 6: Your driver code here
+int pci_e1000_attach(struct pci_func *pcif){
+  char *test_string = "I'm here!";
+  	......
+  e1000_transmit_init();
+  // e1000 transmit test
+  e1000_transmit_packet(test_string, 9);
+
+  return 1;
+}
+```
+
+运行`make E1000_DEBUG=TXERR,TX qemu`，那么你将会看见类似于下面的内容的：
+
+```c
+e1000: index 0: 0x2ed040 : 9000009 
+```
+
+上述只打印了一行发送信息，假如你有发送多个数据包的话，那么将会看到多行这样的信息。每一行包含的信息依次为：transmit array中的index，transmit descriptor对应的buffer address（这个地址可能会不一样），cmd/cso/length等域的值（**cmd也就是刚开始的9都是一样的** ，最后一个9是发送的长度，这个值根据你发送的数据包大小来），special/CSS/status域。一旦你运行qemu，你之后可以运行`tcpdump -XXnr qemu.pcap`来查看你发送的数据包内容。如下所示：
+
+```
+reading from file qemu.pcap, link-type EN10MB (Ethernet)
+03:10:36.375591 [|ether]
+	0x0000:  4927 6d20 6865 7265 21                   I'm.here!
+```
+
+增加一个system call，让从user space也可以调用数据包发送功能。整个接口的实现完全取决于你自己，不要忘记检查任何从user space传到kernel的指针。下面我们按照system call的流程来实现，首先是在是`lib/syscall.c`中添加供user space调用的接口
+
+```c
+int
+sys_transmit_packet(char *data, int len)
+{
+  return syscall(SYS_transmit_packet, 1, (uint32_t)data, len, 0, 0, 0);
+}
+```
+
+在`inc/lib.h`中添加相应的函数声明
+
+```c
+int sys_transmit_packet(char *data, int len);
+```
+
+同时别忘记在`inc/syscall.h`中添加相应的system call number
+
+```c
+/* system call numbers */
+enum {
+  	......
+  SYS_transmit_packet,
+  NSYSCALLS
+};
+```
+
+最后实现kernel中的system call，修改`kern/syscall.c`中的`syscall`函数，实现`sys_transmit_packet`函数，同时记得添加头文件
+
+```c
+#include <kern/e1000.h>
+
+// transmit packet
+static int sys_transmit_packet(char *data, int len){
+  user_mem_assert(curenv, data, len, 0);
+  return e1000_transmit_packet(data, len);
+}
+
+int32_t
+syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+{
+    ......
+    case SYS_transmit_packet:
+    	return (int32_t)sys_transmit_packet((char *)a1, a2);
+	......
+}
+```
+
+## Transmitting Packets: Network Server
 
 现在设备驱动的发送端已经有了一个system call接口，那么是时候来发送packet了。output helper environmentd的目标是循环执行下面这些事：从core network server接受`NSREQ_OUTPUT` IPC messages，然后使用system call发送IPC message中带着的packet给network device驱动（这个system call是上面添加的）。`NSREQ_OUTPUT`是`net/lwip/jos/jif/jif.c`中的`low_level_output`函数发送的，这个函数将lwip stack绑定在JOS的network system上。每一个IPC都将带有由`union Nsipc`组成的一个页，这个页中有一个packet存在它的`field`领域中。
 
@@ -677,13 +951,145 @@ struct jif_pkt {
 
 当core network server使用IPC给output environment 发送packet的时候，如果发送 packet的system call因为驱动没有更多的buffer space来存放packet而导致output environment挂起，那么core network server将会等待直到output server接受了IPC call。
 
-## Part B: Receiving packets and the web server
+下面实现`net/output.c`
 
-### Receiving Packets
+```c
+void
+output(envid_t ns_envid)
+{
+  binaryname = "ns_output";
+  
+  // LAB 6: Your code here:
+  //  - read a packet from the network server
+  //  - send the packet to the device driver
+  int re;
 
-### Receiving Packets: Network Server
+  envid_t from_env;
+  int perm;
+  struct jif_pkt *pkt;
 
-### The Web Server
+  while(1){
+    re = ipc_recv(&from_env, &nsipcbuf, &perm);
+    if(re != NSREQ_OUTPUT){
+      continue;
+    }
+
+    pkt = &(nsipcbuf.pkt);
+    while((sys_transmit_packet(pkt->jp_data, pkt->jp_len)) < 0){
+      sys_yield(); 
+    }
+ 
+  }
+}
+```
+
+同时别忘记把`pci_e1000_attach`中测试发送的代码注释掉
+
+```c
+// LAB 6: Your driver code here
+int pci_e1000_attach(struct pci_func *pcif){
+  // char *test_string = "I'm here!";
+	......
+  // e1000 transmit test
+  // e1000_transmit_packet(test_string, 9);
+
+  return 1;
+}
+```
+
+使用`net/testoutput.c`来测试output code而不用调用整个network server。运行`make E1000_DEBUG=TXERR,TX run-net_testoutput-nox`，你会看到类似下面这样的信息
+
+```
+Transmitting packet 0
+e1000: index 0: 0x2ed040 : 9000009 0
+Transmitting packet 1
+e1000: index 1: 0x2ed62e : 9000009 0
+......
+```
+
+使用`tcpdump -XXnr qemu.pcap`将会输出
+
+```
+reading from file qemu.pcap, link-type EN10MB (Ethernet)
+04:01:37.322935 [|ether]
+	0x0000:  5061 636b 6574 2030 30                   Packet.00
+04:01:37.332148 [|ether]
+	0x0000:  5061 636b 6574 2030 31                   Packet.01
+......
+```
+
+假如想要测试一个更大数量的数据包，运行`make E1000_DEBUG=TXERR,TX NET_CFLAGS=-DTESTOUTPUT_COUNT=100 run-net_testoutput`。这条命令将会测试100个数据包，如果溢出了你的发送队列，请同时检查你处理DD位和RS位（RS位将会告诉硬件去设置DD位）。你的代码如果实现正确的话，那么将会通过`make grade`的`testoutput`测试
+
+```c
+testtime: OK (9.3s) 
+pci attach: OK (2.5s) 
+testoutput [5 packets]: OK (3.9s) 
+testoutput [100 packets]: OK (3.3s) 
+Part A score: 35/35
+```
+
+## Receiving Packets
+
+就像实现发送packet一样，你也需要配置E1000可以接收packet并且提供一个接收描述符队列和接收描述符。**section 3.2描述了数据包接收是如何工作的**，包括接收队列的结构和接收描述符；**section 14.4是详细的初始化过程**。在阅读section 3.2的时候，你可以忽略关于中断和校验和卸载的任何内容（当然你可以回到这些section，如果你之后准备使用这些功能），同时你不用去关心阈值的细节和网卡内部的caches工作的细节。
+
+接收队列跟发送队列很像，只是接收队列是由空的等待收到的packets填充的packet buffer组成。因此当网络是空闲的时候，发送队列是空的，因为所有的packet都已经被发送，但是接收队列是满的，由空的packet buffer组成。
+
+当E1000接收到一个packet的时候，E1000先检查这个packet是否符合网卡的配置过滤器（比如，查看这个packet是否指向E1000的MAC地址），假如不符合任何过滤器那么忽视这个packet。假如符合的话，E1000会尝试从接收队列的头部开始检索下一个接收描述符。如果RDH跟RDT碰头了，那么接收队列就没有空闲描述符了，所以网卡将会丢掉这个packet。假如存在空闲的接收描述符，网卡把这个packet数据拷贝到这个描述符所指的缓冲区，设置描述符的DD（Descriptor Done）位和EOP（End of Packet）位，然后增加RDH。
+
+如果E1000接收到一个packet比接收描述符所指的packet buffer还要大的话，那么E1000将会从接收队列中检索尽可能多的描述符来存储packet的全部内容。为了表明这种情况发生了，那么这些描述符的DD位都会被设置，但是只有最后一个描述符的EOP位会被设置。你可以在你的驱动程序中处理这种可能性，或者简单的配置网卡不要接收“long packet”（也称为巨型帧），并且确保接收缓存区是足够大的来存放最大标准的Ethernet packet（1518字节）。
+
+创建接收队列并且按照section 14.4中的流程来配置E1000，同时需要结合以下内容
+
+- 不需要支持“long packet”或者multicast
+
+- 现在不要配置网卡使用interrupt，你可以之后改变这个配置，如果你决定使用接收interrupt。
+
+- 同样，配置E1000卸载掉Ethernet CRC，由于grade script希望它被卸载的
+
+- 默认情况下，网卡将会过滤掉所有的packet，所以需要配置Receive Address Registers（RAL和RAH）为网卡自己的MAC address，这是为了接收指向网卡的packet。你可以简单硬编码qemu默认的MAC地址`52:54:00:12:34:56`（在lwIP中已经对这个地址进行硬编码了，所以这么做问题不大）。请注意字节的顺序，MAC address是从低字节到高字节排序的，所以 52:54:00:12是网卡地址的低32位，34:56是网卡地址的高16位。
+
+- E1000只支持特定一系列特定的接收缓存区长度，在section 13.4.22的RCTL.BSIZE中有描述，如下所示：
+
+  ```
+  RCTL.BSEX = 0b:
+  00b = 2048 Bytes.
+  01b = 1024 Bytes.
+  10b = 512 Bytes.
+  1b1 = 256 Bytes.
+  RCTL.BSEX = 1b:
+  00b = Reserved; software should not program this value.
+  01b = 16384 Bytes.
+  10b = 8192 Bytes.
+  11b = 4096 Bytes
+  ```
+
+  如果将接收数据包的缓存区设置的足够大，并且禁止掉long packets，那么你就不用担心packets分散在多个接收缓存区中。
+
+- 跟发送类似，接收队列和相应的packet buffer必须是物理地址连续的，同时至少使用128个接收描述符。
+
+总的来说，我们需要配置RDESC、RDBAL、RDBAH、RDLEN、RDH、RDT、RCTL、RAL、RAH、MTA、IMS、RDTR等寄存器。
+
+```c
+
+```
+
+> E1000_RAH_AV位记得设置，这是根据后面的提示添加上去的。
+
+对接收功能现在可以做一个基础的测试，即使没有实现接收packets的函数。运行`make E1000_DEBUG=TX,TXERR,RX,RXERR,RXFILTER run-net_testinput-nox`，`testinput`将会使用我们上面实现的packet transmit system call发送一个ARP（Address Resolution Protocol，地址解析协议）通知包，qemu针对这个包将会自动回复。虽然驱动现在不能收到这个回复，但是你还是会看见"e1000: unicast match[0]: 52:54:00:12:34:56"的消息，这个消息表明发送的数据包已经被E1000接收，并且这个数据包符合配置的接收过滤器。如果你看见“e1000: unicast mismatch: 52:54:00:12:34:56”消息，那么表示E1000过滤出这个数据包了，也就意味着你可能没有正确地配置好RAL和RAH。请确保正确处理了字节的顺序，同时不要忘记在RAH中设置“Address Valid”位。假如你没有获得任何“e1000”的消息，可能没有正确使能接收功能。
+
+```
+Sending ARP announcement...
+e1000: index 0: 0x36d860 : 900002a 0
+e1000: unicast match[0]: 52:54:00:12:34:56
+```
+
+---
+
+现在我们猪呢比
+
+## Receiving Packets: Network Server
+
+## The Web Server
 
 
 
