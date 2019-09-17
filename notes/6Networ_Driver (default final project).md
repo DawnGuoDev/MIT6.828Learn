@@ -1,7 +1,3 @@
-## 进度
-
-把手册看一下，然后再继续看一下PCI
-
 ## Introduction
 
 在实现完Lab5之后，我们有了一个文件系统，然而没有network stack的OS是没有灵魂的OS。所以在这个Lab中，我们准备写一个network interface card的驱动。这网卡是基于Intel 82540EM芯片，也被称为E1000。network card driver 可以让我们的OS连上因特网。在Lab6的，已经提供了一个network stack和network server。相关新的代码在`net/`目录和`kern/`中。下面来说说相关的实现事项：
@@ -1085,15 +1081,117 @@ e1000: unicast match[0]: 52:54:00:12:34:56
 
 ---
 
-现在我们猪呢比
+现在需要去实现接收packets了。为了接收一个packet，驱动必须跟踪哪一个描述符是被期望用来存放下一个接收到的packet（Hint：跟踪的方法取决于你的设计，E1000可能已经有一个寄存器用来跟踪这个）。跟发送类似，开发手册中提到RDH寄存器在软件层面上操作不能被信赖，所以为了判断一个packet是否被递送到描述符的packet buffer，需要去读取这个描述符中的DD status位。
+
+- 如果DD位被设置了，那么你可以把packet data从描述符的packet buffer中取出来，之后通过更新queue的tail指针（RDT），告诉网卡这个描述符已经是空闲了的。
+
+- 如果DD位没有被设置，那么则表示没有接收到packet。这是接收端等效于发送队列已满的情况，那么在这种情况下可以有以下几种方式来应对。
+
+  第一种方式：你可以简单的返回一个“try again”错误并且尝试重复调用。然而这种方法对于完整的发送队列是有效的，因为那是一个瞬态条件，但是对于空的接收队列就显得不合理了，因为接收队列可能会维持空状态很长一段时间。
+
+  第二种方式：挂起调用的environment，直到在接收队列中有packet等待处理为止。这种方式跟`sys_ipc_recv`是很类似的。就像IPC的情况，由于对每一个CPU，我们只有一个kernel stack，一旦我们离开了kernel那么stack上的状态就会丢失。所以我们需要设置一个标志位来表示一个environment已经由于接收队列下溢被挂起同时记录system call的参数。这种方式的缺点就是复杂：必须指示E1000产生receive interrupts，同时驱动必须处理这些中断为了恢复因等待packet而阻塞的environment。
+
+编写一个函数从E1000中接收一个packet，并且添加一个system call让user space可以调用。最后请确保将接收队列处理为空。
+
+```c
+
+```
+
+
 
 ## Receiving Packets: Network Server
 
+在network server的input environment中，你需要使用上述实现的 receive system call 来接收packets，并且使用`NSREQ_INPUT` IPC message把这些packets发送到core network server environment。这些IPC input message应该会有一个带有`union Nsipc`的page，`union Nsipc`中的`struct jif_pkt pkt`的值被接收到的packet所填充。下面我们来实现`net/input.c`。
+
+```c
+
+```
+
+使用` make E1000_DEBUG=TX,TXERR,RX,RXERR,RXFILTER run-net_testinput`再次运行`testinput`，你将会看见如下内容，以“input:”开始的行表示的是qemu的arp reply的16进制形式。
+
+```c
+Sending ARP announcement...
+e1000: index 0: 0x350e60 : 900002a 0
+e1000: unicast match[0]: 52:54:00:12:34:56
+input: 0000   5254 0012 3456 5255  0a00 0202 0806 0001
+input: 0010   0800 0604 0002 5255  0a00 0202 0a00 0202
+input: 0020   5254 0012 3456 0a00  020f 0000 0000 0000
+input: 0030   0000 0000 0000 0000  0000 0000 0000 0000
+```
+
+> 我的`Waiting for packets...`打印的位置跟Lab中给出的情况不一样，但是影响不大，主要是看上述接收到的数据包是否正确。
+
+我们的代码也应该通过`make grade`的testinput测试。注意：如果不发送至少一个ARP包来通知qemu jos的IIP地址，那么是无法测试数据包的接收的，所以你的发送代码中有bug的话将会造成这个测试失败。
+
+为了更彻底的测试你的网络代码，我们提供了一个daemon叫做`echosrv`，`echosrv`建立了一个echo服务并且运行在port 7上，这个服务会echo back任何通过TCP连接发送的内容。使用`make E1000_DEBUG=TX,TXERR,RX,RXERR,RXFILTER run-echosrv`在一个终端中开启echo 服务，然后再另一个终端中使用`make nc-7`去连接它。你输入的每一行都会被这个服务回显。每一次仿真的E1000收到一个packet，qemu都会像下面这样打印到控制台上
+
+```bash
+e1000: unicast match[0]: 52:54:00:12:34:56
+e1000: index 8: 0x353dd0 : 9000036 0
+e1000: index 9: 0x3543be : 9000036 0
+e1000: unicast match[0]: 52:54:00:12:34:56
+```
+
+同时你应该通过了`make grade`中的`echosrv`测试
+
+```bash
+testinput [5 packets]: OK (3.2s)
+testinput [100 packets]: OK (7.7s)
+tcp echo server [echosrv]: OK (2.0s)
+```
+
 ## The Web Server
 
+一个web 服务用它最简单的形式发送一个文件的内容给请求的客户端。我们已经在`user/httpd.c`中提供了一个相当简单的web服务器的框架代码，这个框架代码已经提供了对进来的连接处理的代码和解析头部的代码。但是这个web server缺少了返回一个文件内容的代码。所以需要实现`send_file`和`send_data`两个函数
 
+```c
 
+```
 
+一旦你完成了web服务的编写，使用`make run-httpd-nox`启动webserver，然后打开浏览器输入`http://host:port/index.html`，host是运行qemu的计算机名称，由于我的实验平台是在我自己的linux主机上，所以输出localhost即可，port是通过`make which-ports`显示出来的port数，比如我的是25002
+
+```bash
+Local port 25002 forwards to JOS port 80 (web server)
+```
+
+由于我们已经做了端口映射，JOS的80端口被映射到了25002端口，所以当我们访问25002端口的时候，实际会访问JOS的80端口。浏览器的运行效果如下所示：
+
+![](./image/Lab6_5.jpg)
+
+此时运行`make grade`你将会得到105/105分哦
+
+```c
+testtime: OK (8.6s) 
+pci attach: OK (2.1s) 
+testoutput [5 packets]: OK (3.8s) 
+testoutput [100 packets]: OK (3.3s) 
+Part A score: 35/35
+
+testinput [5 packets]: OK (3.7s) 
+testinput [100 packets]: OK (8.3s) 
+tcp echo server [echosrv]: OK (2.6s) 
+web server [httpd]: 
+  http://localhost:25002/: OK (2.6s) 
+  http://localhost:25002/index.html: OK (3.1s) 
+  http://localhost:25002/random_file.txt: OK (3.6s) 
+Part B score: 70/70
+
+Score: 105/105
+```
+
+---
+
+`user/httpd.c`跟发送相关的函数如下所示：
+
+| 函数名            | 功能                                           |
+| ----------------- | ---------------------------------------------- |
+| send_header       | 返回头部信息"HTTP/" HTTP_VERSION " 200 OK\r\n" |
+| send_data         | 返回发送数据                                   |
+| send_size         | 返回长度"Content-Length: %ld\r\n"              |
+| send_content_type | 返回文件类型"Content-Type: %s\r\n"             |
+| send_header_fin   | 返回"\r\n"                                     |
+| send_error        | 返回错误                                       |
+| send_file         | 返回文件内容                                   |
 
 ## 总结
 
@@ -1101,6 +1199,7 @@ e1000: unicast match[0]: 52:54:00:12:34:56
 2. 画一下qemu的网络拓扑图
 3. 总结一下整个网络通信的过程
 4. sys_yield这个系统调用再看一下
+5. 这边接收的还有点不了解的，为什么需要延迟
 
 ## 附录
 
