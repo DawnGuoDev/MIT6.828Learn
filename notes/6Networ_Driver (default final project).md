@@ -1063,13 +1063,206 @@ Part A score: 35/35
 
 - 跟发送类似，接收队列和相应的packet buffer必须是物理地址连续的，同时至少使用128个接收描述符。
 
-总的来说，我们需要配置RDESC、RDBAL、RDBAH、RDLEN、RDH、RDT、RCTL、RAL、RAH、MTA、IMS、RDTR等寄存器。
+总的来说，我们需要配置RDESC、RDBAL、RDBAH、RDLEN、RDH、RDT、RCTL、RAL、RAH、MTA、IMS、RDTR等寄存器。首先我们在`kern/e1000.h`中添加相应的宏定义和定义相应的结构体：
 
 ```c
+/* functions */
+void e1000_receive_init();
 
+/* receive queue */
+#define E1000_MAXRXQUEUE  256
+#define E1000_RXPKTSIZE   1518
+
+/* Register Set */
+#define E1000_IMS      0x000D0  /* Interrupt Mask Set - RW */
+#define E1000_RCTL     0x00100  /* RX Control - RW */
+#define E1000_RDBAL    0x02800  /* RX Descriptor Base Address Low - RW */
+#define E1000_RDBAH    0x02804  /* RX Descriptor Base Address High - RW */
+#define E1000_RDLEN    0x02808  /* RX Descriptor Length - RW */
+#define E1000_RDH      0x02810  /* RX Descriptor Head - RW */
+#define E1000_RDT      0x02818  /* RX Descriptor Tail - RW */
+#define E1000_RDTR     0x02820  /* RX Delay Timer - RW */
+#define E1000_MTA      0x05200  /* Multicast Table Array - RW Array */
+#define E1000_RA       0x05400  /* Receive Address - RW Array */
+
+/* Register Bit Masks */
+#define E1000_RXD_STAT_DD       0x01    /* Descriptor Done */
+#define E1000_RXD_STAT_EOP      0x02    /* End of Packet */
+#define E1000_RCTL_EN           0x00000002    /* enable */
+#define E1000_RCTL_LPE          0x00000020    /* long packet enable */
+#define E1000_RCTL_LBM          0x000000C0    /* no loopback mode */
+#define E1000_RCTL_MO_3         0x00003000    /* multicast offset 15:4 */
+#define E1000_RCTL_BAM          0x00008000    /* broadcast enable */
+#define E1000_RCTL_BSEX         0x02000000    /* Buffer size extension */
+/* these buffer sizes are valid if E1000_RCTL_BSEX is 0 */
+#define E1000_RCTL_SZ_2048      0x00000000    /* rx buffer size 2048 */
+#define E1000_RCTL_SZ_1024      0x00010000    /* rx buffer size 1024 */
+#define E1000_RCTL_SZ_512       0x00020000    /* rx buffer size 512 */
+#define E1000_RCTL_SZ_256       0x00030000    /* rx buffer size 256 */
+/* these buffer sizes are valid if E1000_RCTL_BSEX is 1 */
+#define E1000_RCTL_SZ_16384     0x00010000    /* rx buffer size 16384 */
+#define E1000_RCTL_SZ_8192      0x00020000    /* rx buffer size 8192 */
+#define E1000_RCTL_SZ_4096      0x00030000    /* rx buffer size 4096 */
+#define E1000_RCTL_SECRC        0x04000000    /* Strip Ethernet CRC */
+#define E1000_RAH_AV            0x80000000    /* Receive descriptor valid */ 
+
+// receive descriptor
+struct e1000_rdesc{
+  uint64_t addr;
+  uint16_t length;
+  uint16_t cksum;
+  uint8_t  status;
+  uint8_t  errors;
+  uint16_t special;
+}__attribute__((packed));
+
+
+// receive descriptor base address low 
+struct e1000_rdbal{
+  uint32_t rdbal;
+};
+
+// receive descriptor base address high
+struct e1000_rdbah{
+  uint32_t rdbah;
+};
+
+// receive descriptor length
+struct e1000_rdlen{
+  uint32_t zero     : 7;
+  uint32_t len      : 13;
+  uint32_t reserved : 12;
+
+};
+
+// receive descriptor head
+struct e1000_rdh{
+    uint16_t rdh;
+    uint16_t reserved;
+};
+
+// receive descriptor tail
+struct e1000_rdt{
+  uint16_t rdt;
+  uint16_t reserved;
+};
+
+// receive control register
+struct e1000_rctl{
+  uint32_t rcb      : 27;
+  uint32_t reserved : 5;
+};
+
+// receive delay timer register
+struct e1000_rdtr{
+  uint16_t dtimer;
+  uint16_t      : 15;
+  uint16_t  fpd : 1;
+};
+
+// interrupt mask set 
+struct e1000_ims{
+  uint16_t  ims;
+  uint16_t  reserved;
+};
 ```
 
-> E1000_RAH_AV位记得设置，这是根据后面的提示添加上去的。
+> 需要注意以下几点：
+> 1.有些寄存器没有必要实现成对应的结构体形式；
+>
+> 2.位掩码的问题需要根据你实际的情况来进行修改，而不是直接从`e1000_hw.h`中直接拷贝过来；
+>
+> 3.接收队列中描述符的大小这边填相应小一点，因为在实验过程中使用了4096，结果爆出了page fault等一些无法解决的问题
+
+接下去我们再在`kern/e1000.c`中添加相应内容
+
+```c
+// receive descriptor queue 
+struct e1000_rdesc e1000_rdesc_queue[E1000_MAXRXQUEUE];
+// receive packets buffer
+char e1000_rx_pkt_buffer[E1000_MAXRXQUEUE][E1000_RXPKTSIZE];
+
+// receive descriptor queue head & tail
+struct e1000_rdh *rdh;
+struct e1000_rdt *rdt;
+
+// default mac address
+#define MACADDR 0x563412005452
+
+// LAB 6: Your driver code here
+int pci_e1000_attach(struct pci_func *pcif){
+	......
+  // e1000 receive init
+  e1000_receive_init();
+	......
+}
+// receive init refer to section 14.4
+void e1000_receive_init(){
+  int i;
+
+  uint64_t *ra;
+  uint64_t *mta;
+  struct e1000_ims *ims;
+  struct e1000_rdtr *rdtr;
+  struct e1000_rdbal *rdbal;
+  struct e1000_rdbah *rdbah;
+  struct e1000_rdlen *rdlen;
+  struct e1000_rctl *rctl;
+
+  // pointers to buffers should be stored in the receive descriptor 
+  for(i = 0; i < E1000_MAXRXQUEUE; i++){
+    e1000_rdesc_queue[i].addr = PADDR(e1000_rx_pkt_buffer[i]);
+  }
+
+  // set the mac address
+  ra = (uint64_t *)E1000REG(E1000_RA);
+  *ra = (uint64_t)MACADDR | ((uint64_t)E1000_RAH_AV << 32);
+
+  mta = (uint64_t *)E1000REG(E1000_MTA);
+  *mta =  0x0;
+  *(mta + 1) = 0x0;
+
+  ims = (struct e1000_ims *)E1000REG(E1000_IMS);
+  ims->ims = 0;
+
+  rdtr = (struct e1000_rdtr *)E1000REG(E1000_RDTR);
+  rdtr->dtimer = 0;
+
+  // set receive descriptor base address low
+  rdbal = (struct e1000_rdbal *)E1000REG(E1000_RDBAL);
+  rdbal->rdbal = PADDR(e1000_rdesc_queue);
+  // set receive descriptor base address high
+  rdbah  = (struct e1000_rdbah *)E1000REG(E1000_RDBAH);
+  rdbah->rdbah = 0;
+
+  // set receive descriptor queue length
+  rdlen = (struct e1000_rdlen *)E1000REG(E1000_RDLEN);
+  rdlen->len = E1000_MAXRXQUEUE;
+
+  // set receive descriptor queue head
+  rdh = (struct e1000_rdh *)E1000REG(E1000_RDH);
+  rdh->rdh = 0;
+    
+  // set receive desciptor queue tail 
+  rdt = (struct e1000_rdt *)E1000REG(E1000_RDT);
+  rdt->rdt = E1000_MAXRXQUEUE - 1;
+
+  // set receiver control register
+  rctl = (struct e1000_rctl *)E1000REG(E1000_RCTL);
+  rctl->rcb |= E1000_RCTL_EN;
+  rctl->rcb &= ~E1000_RCTL_LPE;
+  rctl->rcb &= ~E1000_RCTL_LBM;
+  rctl->rcb &= ~E1000_RCTL_MO_3;
+  rctl->rcb |= E1000_RCTL_BAM;
+  rctl->rcb |= E1000_RCTL_SECRC;
+}
+```
+
+> 需要注意以下几点要求：
+>
+> 1.E1000_RAH_AV位记得设置，这是根据后面的提示添加上去的;
+>
+> 2.对寄存器置0的一些语句可以省略，但是为了严谨起见还是加上去为好；
 
 对接收功能现在可以做一个基础的测试，即使没有实现接收packets的函数。运行`make E1000_DEBUG=TX,TXERR,RX,RXERR,RXFILTER run-net_testinput-nox`，`testinput`将会使用我们上面实现的packet transmit system call发送一个ARP（Address Resolution Protocol，地址解析协议）通知包，qemu针对这个包将会自动回复。虽然驱动现在不能收到这个回复，但是你还是会看见"e1000: unicast match[0]: 52:54:00:12:34:56"的消息，这个消息表明发送的数据包已经被E1000接收，并且这个数据包符合配置的接收过滤器。如果你看见“e1000: unicast mismatch: 52:54:00:12:34:56”消息，那么表示E1000过滤出这个数据包了，也就意味着你可能没有正确地配置好RAL和RAH。请确保正确处理了字节的顺序，同时不要忘记在RAH中设置“Address Valid”位。假如你没有获得任何“e1000”的消息，可能没有正确使能接收功能。
 
@@ -1091,21 +1284,125 @@ e1000: unicast match[0]: 52:54:00:12:34:56
 
   第二种方式：挂起调用的environment，直到在接收队列中有packet等待处理为止。这种方式跟`sys_ipc_recv`是很类似的。就像IPC的情况，由于对每一个CPU，我们只有一个kernel stack，一旦我们离开了kernel那么stack上的状态就会丢失。所以我们需要设置一个标志位来表示一个environment已经由于接收队列下溢被挂起同时记录system call的参数。这种方式的缺点就是复杂：必须指示E1000产生receive interrupts，同时驱动必须处理这些中断为了恢复因等待packet而阻塞的environment。
 
-编写一个函数从E1000中接收一个packet，并且添加一个system call让user space可以调用。最后请确保将接收队列处理为空。
+编写一个函数从E1000中接收一个packet，并且添加一个system call让user space可以调用。最后请确保将接收队列处理为空。首先是来编写接收packet的函数：
 
 ```c
+// receive packet
+int e1000_receive_packet(char *data_store, int *len_store){
+  uint16_t tail = (rdt->rdt + 1) % E1000_MAXRXQUEUE;
 
+  if(!(e1000_rdesc_queue[tail].status & E1000_RXD_STAT_DD)){
+    return -1;
+  }
+
+  *len_store = e1000_rdesc_queue[tail].length;
+  e1000_rdesc_queue[tail].status &= ~E1000_RXD_STAT_DD;
+  memcpy(data_store, e1000_rx_pkt_buffer[tail], *len_store);
+  rdt->rdt = (tail) % E1000_MAXRXQUEUE;
+    
+  return 0;
+}
 ```
 
+> 这边需要的注意的是`rdt->rdt`指向接收队列的最后一个，那么真正有接收数据在的描述符是`rdt->rdt`的下一个，所以需要+1.
 
+之后我们再添加一个system call，首先在`kern/syscall.c`中添加相应的内容
+
+```c
+// kern/syscall.c
+// receive packet
+static int
+sys_receive_packet(char *data_store, int *len_store){
+  return e1000_receive_packet(data_store, len_store);
+}
+
+// Dispatches to the correct kernel function, passing the arguments.
+int32_t
+syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)
+{
+    ......
+    case SYS_receive_packet:
+    	return (int32_t)sys_receive_packet((char *)a1, (int *)a2);
+	......
+}
+```
+
+之后跟上述添加syscall的步骤一样，在`inc/syscall.h`中添加实system call number
+
+```c
+/* system call numbers */
+enum {
+  	......
+  SYS_receive_packet,
+  NSYSCALLS
+};
+```
+
+在`lib/syscall.c`中添加
+
+```c
+int sys_receive_packet(char *data_store, int *len_store){
+  return syscall(SYS_receive_packet, 1, (uint32_t)data_store, (uint32_t)len_store, 0, 0, 0);
+}
+```
+
+在`inc/lib.h`中添加声明
+
+```c
+int sys_receive_packet(char *data_store, int *len_store);
+```
 
 ## Receiving Packets: Network Server
 
 在network server的input environment中，你需要使用上述实现的 receive system call 来接收packets，并且使用`NSREQ_INPUT` IPC message把这些packets发送到core network server environment。这些IPC input message应该会有一个带有`union Nsipc`的page，`union Nsipc`中的`struct jif_pkt pkt`的值被接收到的packet所填充。下面我们来实现`net/input.c`。
 
 ```c
+void sleep(int msec){
+  unsigned now = sys_time_msec();
+  unsigned end = now + msec;
 
+  if((int)now < 0 && (int)now > -MAXERROR){
+    panic("sys_time_msec: %e", (int)now);
+  }
+
+  if(end < now){
+    panic("sleep: wrap");
+  }
+
+  while(sys_time_msec() < end){
+    sys_yield();
+  }
+}
+
+void
+input(envid_t ns_envid)
+{
+  binaryname = "ns_input";
+
+  // LAB 6: Your code here:
+  //  - read a packet from the device driver
+  //  - send it to the network server
+  // Hint: When you IPC a page to the network server, it will be
+  // reading from it for a while, so don't immediately receive
+  // another packet in to the same physical page.
+  int len ;
+  char buf[E1000_RXPKTSIZE];
+
+  while(1){
+    while((sys_receive_packet(buf, &len)) < 0){
+      sys_yield();
+    }
+
+    nsipcbuf.pkt.jp_len = len;
+    memcpy(nsipcbuf.pkt.jp_data, buf, len);
+
+    ipc_send(ns_envid, NSREQ_INPUT, &nsipcbuf, PTE_U | PTE_P | PTE_W);
+    sleep(50);
+  }
+}
 ```
+
+> 这边为啥需要加一个sleep呢？因为在下面的`make grade`中，不加sleep或者sleep的时间特别少的时候，总是会提示少第一个包或者少几个包。加上之后，包不会缺少了。但是sleep的时间不能太长，否则在`make grade`中会超时。但是不加sleep的话，`make grade`中的`echosrv`是可以通过的。
 
 使用` make E1000_DEBUG=TX,TXERR,RX,RXERR,RXFILTER run-net_testinput`再次运行`testinput`，你将会看见如下内容，以“input:”开始的行表示的是qemu的arp reply的16进制形式。
 
@@ -1145,7 +1442,81 @@ tcp echo server [echosrv]: OK (2.0s)
 一个web 服务用它最简单的形式发送一个文件的内容给请求的客户端。我们已经在`user/httpd.c`中提供了一个相当简单的web服务器的框架代码，这个框架代码已经提供了对进来的连接处理的代码和解析头部的代码。但是这个web server缺少了返回一个文件内容的代码。所以需要实现`send_file`和`send_data`两个函数
 
 ```c
+static int
+send_data(struct http_request *req, int fd)
+{
+  // LAB 6: Your code here.
+  struct Stat stat;
+  int r;
+  char *buf;
 
+  if((r = fstat(fd, &stat)) < 0){
+    return r;
+  }
+
+  buf = malloc(stat.st_size);
+  if(! (r = readn(fd, buf, stat.st_size))){
+    return -1;
+  }
+
+  if(write(req->sock, buf, r) != r){
+    return -1;
+  }
+
+  free(buf);
+
+  return 0;
+}
+static int
+send_file(struct http_request *req)
+{
+  int r;
+  off_t file_size = -1;
+  int fd;
+
+  // open the requested url for reading
+  // if the file does not exist, send a 404 error using send_error
+  // if the file is a directory, send a 404 error using send_error
+  // set file_size to the size of the file
+
+  // LAB 6: Your code here.
+  // panic("send_file not implemented");
+  struct Stat stat;
+
+  if((fd = open(req->url, O_RDONLY))< 0){
+    send_error(req, 404);
+    goto end;
+  }
+
+  if((r = fstat(fd, &stat)) < 0){
+    goto end;
+  }
+
+  if(stat.st_isdir){
+    send_error(req, 404);
+    goto end;
+  }
+
+  file_size = stat.st_size;
+
+  if ((r = send_header(req, 200)) < 0)
+    goto end;
+
+  if ((r = send_size(req, file_size)) < 0)
+    goto end;
+
+  if ((r = send_content_type(req)) < 0)
+    goto end;
+
+  if ((r = send_header_fin(req)) < 0)
+    goto end;
+  
+  r = send_data(req, fd);
+
+end:
+  close(fd);
+  return r;
+}
 ```
 
 一旦你完成了web服务的编写，使用`make run-httpd-nox`启动webserver，然后打开浏览器输入`http://host:port/index.html`，host是运行qemu的计算机名称，由于我的实验平台是在我自己的linux主机上，所以输出localhost即可，port是通过`make which-ports`显示出来的port数，比如我的是25002
@@ -1193,13 +1564,18 @@ Score: 105/105
 | send_error        | 返回错误                                       |
 | send_file         | 返回文件内容                                   |
 
+## Lab中的Question
+
+1. question1和question2相应的处理方式看实现的代码即可。
+2. question3：说明了http的数据包通过一层层封包再通过一层层拆包可以在两台计算机中成功传输。
+
 ## 总结
 
 1. 驱动实现这个网卡驱动，顺便看一下IDE DISK的实现。
 2. 画一下qemu的网络拓扑图
 3. 总结一下整个网络通信的过程
-4. sys_yield这个系统调用再看一下
 5. 这边接收的还有点不了解的，为什么需要延迟
+5. 上层httpd与core network server的再开一下
 
 ## 附录
 
