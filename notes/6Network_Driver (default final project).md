@@ -1,6 +1,6 @@
 ## Introduction
 
-在实现完Lab5之后，我们有了一个文件系统，然而没有network stack的OS是没有灵魂的OS。所以在这个Lab中，我们准备写一个network interface card的驱动。这网卡是基于Intel 82540EM芯片，也被称为E1000。network card driver 可以让我们的OS连上因特网。在Lab6的，已经提供了一个network stack和network server。相关新的代码在`net/`目录和`kern/`中。下面来说说相关的实现事项：
+在实现完Lab5之后，我们有了一个文件系统，然而没有network stack的OS是没有灵魂的OS。所以在这个Lab中，我们准备写一个network interface card的驱动。这网卡是基于Intel 82540EM芯片，也被称为E1000。network card driver 可以让我们的OS连上因特网。在Lab6中，已经提供了一个network stack和network server。相关新的代码在`net/`目录和`kern/`中。下面来说说相关的实现事项：
 
 - 实现网卡驱动之外，并且创建一个system call使得可以访问这个驱动；
 - 实现缺掉的network server code ，使得在network stack和驱动之间可以传输数据包；
@@ -249,8 +249,8 @@ Welcome to the JOS kernel monitor!
 
 - 浏览chapter 2来获得对这个设备的整体印象；
 - 对chapte3和14以及4.1章要熟悉一点，才能写驱动；
-- 使用chapter 13作为参考
-- 其他的chapters主要是讲E1000的组件，但是你的设备不会跟这些组件交互
+- 使用chapter 13作为参考；
+- 其他的chapters主要是讲E1000的组件，但是你的设备不会跟这些组件交互；
 
 不用太担心这些细节，对这个文档是如何组织的有一个感觉就好，这样下面我们才可以找到相关的内容。在阅读的这个手册的时候，需要记住E1000是一个复杂的设备，它有很多先进的特性。但是运作一个E1000设备仅仅需要部分特性以及只需要network interface card提供的部分接口。仔细思考如何用最简单的方法与这个网卡交互，同时强烈推荐在使用先进的特性之前先使用一个最基础的驱动程序。
 
@@ -260,7 +260,7 @@ Welcome to the JOS kernel monitor!
 
 E1000是一个PCI设备，那么也就意味着它可以插入主板的PCI总线上。PCI总线有地址、数据和中断行，并且允许CPU和PCI设备交流以及PCI设备读写内存。在使用PCI设备之前，需要先发现和初始化PCI设备。发现是在PCI总线上寻找相关devices的过程。**初始化是分配IO和内存空间以及协商设备使用的IRQ line的过程。**
 
-我们在`kern/pci.c`中提供了PCI code。为了在boot阶段执行PCI的初始化，PCI code沿着PCI 总线来寻找设备。当找到一个设备之后，读取该设备的vendor ID和device ID，然后使用这两个ID作为key来搜索`pci_attach_vendor`数组。这个数组是由一系列的 `struct pci_driver` 组成的
+我们在`kern/pci.c`中提供了PCI code。在启动阶段PCI code沿着PCI 总线来寻找设备。当找到一个设备之后，读取该设备的vendor ID和device ID，然后使用这两个ID作为key来搜索`pci_attach_vendor`数组。这个数组是由一系列的 `struct pci_driver` 组成的
 
 ```c
 // pci_attach_vendor matches the vendor ID and device ID of a PCI device. key1
@@ -278,7 +278,7 @@ struct pci_driver {
 
 如果发现该设备的vendor ID和 device ID跟数组中的一个条目匹配，PCI code调用该条目中的`attachfn`函数来执行设备初始化（Hint：结合上面的结构体）。设备也可以由类别来是识别，这个就是`kern/pci.c`中另一个驱动表的作用。
 
-attach function被传入一个PCI function来初始化（Hint：结合上面的结构体）。一个PCI card可以使用很多函数，但是E1000只有一个。下面是我们如何在JOS中表示一个PCI函数的
+attach function被传入一个PCI 功能来初始化（Hint：结合上面的结构体）。一个PCI card可以使用很多功能，但是E1000只有一个。下面是我们如何在JOS中表示一个PCI功能的
 
 ```c
 struct pci_func {
@@ -301,7 +301,7 @@ struct pci_func {
 -  `reg_base` 和 `reg_size`数组包含了最多六个BAR（Base Address Register）的信息。BARs的具体含义可以看table4-2的后半段。`reg_base`记录了MMIO区域的基础内存地址（或者是IO port资源的基础IO port）。  `reg_size`包含了`reg_base`中内存区域的大小或者IO ports的数量。
 - `irq_line`包含了分配给device 用来中断的IRQ line。
 
-当一个设备的attach function被调用的时候，设备已经被找到但是没有使能。这也就意味着PCI code还没有决定分配给设备的资源，比如地址空间和IRQ line。因此`reg_base`、`reg_size`和`irq_line`还没有被填充。attch function需要调用`pci_func_enable`来使能设备，分配这些资源，然后把这些资源填充到`struct pci_func`中。
+当一个设备的attach function被调用的时候，设备已经被找到但是没有使能。这也就意味着PCI code还没有决定分配给设备的资源，比如地址空间和IRQ line，因此`reg_base`、`reg_size`和`irq_line`还没有被填充。attch function需要调用`pci_func_enable`来使能设备，分配这些资源，然后把这些资源信息填充到`struct pci_func`中。
 
 但是我们目前的代码中还没法调用attach function，因为数组中暂时没有对应设备的相关信息。首先在`kern/pci.c`中`pci_attach_vendor`数组中添加一个新的条目，这样当匹配到一个PCI device的时候会触发添加的函数。确保在`{0,0,0}`条目之前将这个新条目添加进去，因为`{0,0,0}`这个条目代表着这个数组的结束。我们可以在开发手册的5.2节找到82540EM的 vendor ID和device ID。在启动的时候，你也会看到JOS扫描PCI bus，并把相关的ID打印出来。下面在`kern/e100.h`中添加如下内容（因为练习提到的是fill实现的内容填写到`kern/e1000.h`和`kern/e1000.c`）
 
@@ -537,10 +537,8 @@ Hint：你需要大量的常量，比如寄存器的位置和掩码。假如从�
 按照上述的要求，我们从`e1000_hw.h`文件中截取这个exercise所需要的内容到`kern/e1000.h`，具体可以看我的Github（上个exercise中我们就有使用一些）
 
 ```c
-	......
 /* Register Set */
 #define E1000_STATUS   0x00008  /* Device Status - RO */
-	......
 ```
 
 下面我们修改`kern/e1000.c`的内容
@@ -577,7 +575,7 @@ PCI E1000 status is 0x80080783
 
 在高层次上，接收和传输队列是很相似的，两个都是由一系列描述符组成。虽然这些描述符的确切结构都不相同，但是每一个描述符都包含了flags和包含packet数据的缓存区的物理地址（可能是网卡要发送的数据也可能是OS分配的缓存区，网卡把接受到的packet写到这个缓存区）。
 
-队列被实现成循环数组，这也就意味着当网卡或者驱动到达数组末尾的时候，将会回到开头。两个队列都有一个头指针和一个尾指针，两个指针之间的队列内容是描述符。硬件总是从头开始消耗描述符并移动描述符指针，然而驱动程序总是会增加描述符并移动尾指针。在传输队列中的描述符表示等待要发送的描述符（因此一个稳定的状态是传输队列将会为空）。对于接收队列来说，网卡可以将接收到的packet存放到空闲的描述符中（因此一个稳定的状态是接收队列由所有可获得的接收到的描述符组成）。正确的更新尾指针寄存器而不混淆E1000是有技巧的请小心点。
+队列被实现成循环数组，这也就意味着当网卡或者驱动到达数组末尾的时候，将会回到开头。两个队列都有一个头指针和一个尾指针，两个指针之间的队列内容是描述符。**硬件总是从头开始消耗描述符并移动描述符指针，然而驱动程序总是会增加描述符并移动尾指针。**在传输队列中的描述符表示等待要发送的描述符（因此一个稳定的状态是传输队列将会为空）。对于接收队列来说，网卡可以将接收到的packet存放到空闲的描述符中（因此一个稳定的状态是接收队列由所有可获得的接收到的描述符组成）。正确的更新尾指针寄存器而不混淆E1000是有技巧的请小心点。
 
 #### DMA总结
 
@@ -818,7 +816,7 @@ e1000: tx disabled
 
 上面已经对发送功能进行了初始化，下面我们编写发送packet的代码同时编写相应的system call让user space可以通过system call来调用。为了发送packet，你必须在发送队列的末尾添加这个packet，这意味着把packet data拷贝到下一个packet buffer然后更新TDT（transmit descriptor tail）寄存器来通知网卡这里有packet在transmit queue了。需要注意的是，TDT是一个transmit  descriptor数组而不是字节偏移量。
 
-但是发送队列只有那么大，如果网卡有下一个要发送的packet，但是发送队列已经满了，那该怎么办呢？为了检测这种情况，需要从E1000获得一些反馈。不幸运的是，你不能仅仅只使用TDH（transmit descriptor head）寄存器，手册中明确表明在软件层面读取这个寄存器是不可信赖的。如果你在transmit descriptor的cmd成员变量中设置了RS位，那么当网卡准备使用这个descriptor发送packet的时候，那么网卡将会在这个descriptor的status成员变量中设置DD位。如果descriptor的DD（Descriptor Done）位被设置了，那么；使用这个descriptor和使用它发送另一个packet是安全的。
+但是发送队列只有那么大，如果网卡有下一个要发送的packet，但是发送队列已经满了，那该怎么办呢？为了检测这种情况，需要从E1000获得一些反馈。不幸运的是，你不能仅仅只使用TDH（transmit descriptor head）寄存器，手册中明确表明在软件层面读取这个寄存器是不可信赖的。如果你在transmit descriptor的cmd成员变量中设置了RS位，那么当网卡准备使用这个descriptor发送packet的时候，那么网卡将会在这个descriptor的status成员变量中设置DD位。如果descriptor的DD（Descriptor Done）位被设置了，那么使用这个descriptor和使用它发送另一个packet是安全的。
 
 但是假如用户调用system call，但是下一个descriptor的DD位没有被设置，这也就表明发送队列已经满了，那么该怎么办呢？所以我们需要决定该怎么解决这种情况，你可以简单的丢弃这个packet。网络协议对丢包有相应的弹性，但是如果丢了一大堆包那么网络协议可能也无法恢复了。相反，你可以告诉user environment重试，这就很像`sys_ipc_try_send`中的那样，这对回推environment产生的数据有好处。
 
@@ -1571,43 +1569,81 @@ Score: 105/105
 
 ## 总结
 
-1. 驱动实现这个网卡驱动，顺便看一下IDE DISK的实现。
-2. 画一下qemu的网络拓扑图
-3. 总结一下整个网络通信的过程
-5. 这边接收的还有点不了解的，为什么需要延迟
-5. 上层httpd与core network server的再开一下
+### E1000的初始化和发送/接收数据
+
+初始化这块，我们首先在总线上找到E1000这个PCI设备，之后调用相应的函数读取配置，再进行MMIO的映射。
+
+在MMIO映射这一步完成之后，我们在内存中创建相应发送/接收队列，并把发送/接收队列的相关信息（比如队列头/尾指针、队列开始和长度）存到MMIO区域中。
+
+这些初始化完成之后，E1000的DMA可以发送和接收数据了。
+
+- 发送packet的过程中，发送队列刚开始是空的（队列的头部和尾部都指向队列刚开始的地方），假设发送队列不为空，那么E1000首先从发送队列头部开始读取描述符，把这个描述符所指的packet buffer中的packet数据拷贝出来（到网卡的缓冲中），然后发送出去，同时根据描述符中的RS位有没有设置来决定是否设置DD位（Descriptor Done），如果设置了RS位，那么在发送完之后设置DD位。
+- 接受packet的过程中，接收队列刚开始是由空的描述符组成，当E1000接收到一个packet之后，并且该packet符合网卡的配置过滤器。那么E1000会尝试从接收队列的头部开始检索下一个接收描述符，如果头部跟尾部碰头了，那么表示接收队列没有空闲描述符了，那么E1000将会丢掉这个packet。假如存在空闲的接收描述符，网卡把这个packet数据拷贝到这个描述符所致的packet buffer中，然后把packet的长度存到描述符的length字段中，并设置描述符的DD（Descriptor Done）位和EOP（End of Packet）位，之后增加RDH位。
+
+上面是E1000对发送和接收数据的处理，下面来说一下驱动程序中发送和接收数据的过程。
+
+- 发送packet的过程中，驱动程序从发送队列的尾指针开始，判断尾指针所指的描述符是否被设置了DD位，如果被设置了，那么把packet数据拷贝到描述符所指的packet buffer中，然后把packet的长度存入描述符中并且设置描述符的RS位和EOP位，同时将DD位设置为0。
+- 接收packet的过程中，驱动程序同样从接收队列的尾指针开始，首先判断尾指针所指的下一个描述符的DD位是否被设置了，假如被设置了那么则从该描述符所指的packet buffer中把数据拷贝出来，并且将DD位设置为0，同时对尾指针进行更新。
+
+**从上面可以看出，E1000总是从头开始消耗描述符并移动描述符指针，然而驱动程序总是会增加描述符并移动尾指针。**下面我们针对上述过程，画出如下大致流程图：
+
+![](./image/Lab6_6NIC收发数据.png)
+
+### 上层httpd与core network server
+
+我们将socket也抽象封装成file descriptor，这样子使用fd即可对socket实现某些操作，比如对于socket的读写调用的都是`read`、`write`函数，在这些函数中传入相应的file descriptor number，在这两个函数中会根据fd number调用相应的`dev*_read`或者`dev*_write`函数，针对socket而言调用的则是`devsock_read`和`devsock_write`函数，这两个函数再调用的相应的`nsipc_*`函数与core network server建立IPC通信。但是socket跟普通文件也有点区别的操作，比如对于socket是使用`socket`函数通过IPC通信在core network server创建一个socket，之后IPC通信会返回socket id，我们对这个socket id进行转换，最终返回的是fd number。当然对于socket还有一些其他操作，比如`accpet`和`connect`操作等。
+
+![](./image/Lab6_7httpd与core_network_serverIPC通信.png)
+
+### Lab中整个通信的流程
+
+讲述了一下整个网络功能实现的大致流程，我们拿web服务作为例子的时候，当我们向这个web服务进请求的时候，那么请求的数据包最终是先由网卡接收--->接收之后使用system call 接口传送到了input helper environment--->通过IPC通信传送到core network server--->core network server的dispatcher通过IPC再把收到的packet传给web服务--->web服务对数据处理之后可能会需要返回一些数据--->这些数据通过IPC再次发送给core network environment--->core network environment的lwIP对数据进行封装--->之后再通过IPC发送给output helper environment--->output helper environment通过system call接口发送给网卡。
+
+![](./image/Lab6_8整个网络通信图.png)
+
+### 整个QEMU的网络拓补图
+
+![](./image/Lab6_9网络拓扑图.png)
+
+### 对驱动程序的理解
+
+对驱动程序的理解，个人认为包含两部分
+
+1. 一是对硬件的初始化，比如对硬件进行相关参数的配置；
+2. 二是提供对该硬件相关操作的接口；
+
+
+
+1. 这边接收的还有点不了解的，为什么需要延迟
+
+   
 
 ## 附录
 
-### Microarchitecture
+### Microarchitecture核心部分
 
 ![1568095416550](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1568095416550.png)
 
 #### PCI/PCI-X Core Interface
 
-The PCI/PCI-X core provides a complete glueless interface to a 33/66 MHz, 32/64-bit PCI bus or a
-33/66/133 MHz, 32/64 bit PCI-X bus. 
+The PCI/PCI-X core provides a complete glueless interface to a 33/66 MHz, 32/64-bit PCI bus or a 33/66/133 MHz, 32/64 bit PCI-X bus. 
 
-When the Ethernet controller serves as a PCI target, it follows the PCI configuration specification,
-which allows all accesses to it to be automatically mapped into free memory and I/O space at
-initialization of the PCI system.
+When the Ethernet controller serves as a PCI target, it follows the PCI configuration specification, which allows all accesses to it to be automatically mapped into free memory and I/O space at initialization of the PCI system.
 
-When processing transmit and receive frames, the Ethernet controller operates as master on the PCI
-bus. 
+When processing transmit and receive frames, the Ethernet controller operates as master on the PCI bus. 
 
 The PCI/PCI-X bus interfaces to the DMA engine.
 
 #### DMA Engine and Data FIFO
 
-The DMA engine handles the receive and transmit data and descriptor transfers between the host
-memory and the on-chip memory.
+The DMA engine handles the receive and transmit data and descriptor transfers between the host memory and the on-chip memory.
 
-In the receive path, the DMA engine transfers the data stored in the receive data FIFO buffer to the
-receive buffer in the host memory, specified by the address in the descriptor. It also fetches and
-writes back updated receive descriptors to host memory.
+In the receive path, the DMA engine transfers the data stored in the receive data FIFO buffer to the receive buffer in the host memory, specified by the address in the descriptor. It also fetches and writes back updated receive descriptors to host memory.
 
 In the transmit path, the DMA engine transfers data stored in the host memory buffers to the
 transmit data FIFO buffer. It also fetches and writes back updated transmit descriptors.
+
+The Ethernet controller data FIFO block consists of a 64 KB (40 KB for the 82547GI/EI) on-chip buffer for receive and transmit operation. The receive and transmit FIFO size can be allocated based on the system requirements. The FIFO provides a temporary buffer storage area for frames as they are received or transmitted by the Ethernet controller.
 
 #### 10/100/1000 Mb/s Receive and Transmit MAC Blocks
 
@@ -1615,6 +1651,9 @@ The controller’s CSMA/CD unit handles all the IEEE 802.3 receive and transmit 
 while interfacing between the DMA and TBI/internal SerDes/MII/GMII interface block.
 
 #### MII/GMII/TBI/Internal SerDes Interface Block
+
+The Ethernet controller provides the following serial interfaces:
+• A GMII/MII interface to the internal PHY.
 
 #### 10/100/1000 Ethernet Transceiver (PHY)
 
@@ -1628,14 +1667,15 @@ The Ethernet controller also uses an IEEE-compliant internal Management Data int
 
 #### EEPROM Interface
 
+Ethernet Controllers provide a four-wire direct interface to a serial EEPROM device such as the 93C46 or compatible for storing product configuration information.
+
+Several words of the data stored in the EEPROM are automatically accessed by the
+Ethernet controller, after reset, to provide pre-boot configuration data to the Ethernet controller before it is accessible by the host software.
+
+The remainder of the stored information is accessed by various software modules to report product configuration, serial number and other parameters.
+
 #### FLASH Memory Interface
 
-### DMA Addressing
+The Ethernet controller provides an external parallel interface to a FLASH device. Accesses to the FLASH are controlled by the Ethernet controller and are accessible to software as normal PCI reads or writes to the FLASH memory mapping area. The Ethernet controller supports FLASH devices with up to 512 KB of memory.
 
-### Ethernet Addressing
-
-Several registers store Ethernet addresses in the Ethernet controller. Two 32-bit registers make up
-the address: one is called “high”, and the other is called “low”. 
-
-
-
+> Note: The 82540EP/EM provides an external interface to a serial FLASH or Boot EEPROM device. 
