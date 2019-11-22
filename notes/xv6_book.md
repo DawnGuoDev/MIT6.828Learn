@@ -4,7 +4,7 @@
 
 操作系统通过一个接口给用户程序提供服务。每一个正在运行的程序都被叫做进程，每个进程都有一块内存，内存中包含了指令、数据、和栈。当一个程序需要去调用一个内核服务的时候，它将会通过一个进程来调用操作系统的接口，如此一个过程就被叫做system call。这个system call会进入内核，内容执行这个服务并且返回。因此，该进程在用户空间和内核空间交替执行。内核使用CPU的硬件保护机制确保每一个进程只执行在用户空间，只访问他能访问到的内存。内核带着硬件特权在那运行着，这些硬件特权被要求实现上述的保护机制了。当一个用户程序调用一个system call，硬件将会产生一个硬件特权，在内核中将会开始执行一个提前安排的函数。内核提供的system calls的集合是用户程序可以看得见的。xv6内核提供了传统Unix系统提供的服务和system calls的一部分子集。
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW2_0.jpg)
+![](./image/HW2_0.jpg)
 
 对于传统的类Unix来说，shell是一个主要的用户接口。shell是一个用户程序而不是内核的一部分，它实现了从用户那读取命令，并执行这些命令的功能。shell只是一些system calls的实现，它可以很好的展示system calls的强大。xv6的shell只是一个简单的实现，它的本质是Unix的Bourne shell。
 
@@ -60,13 +60,13 @@ printf("exec error\n");
 
 文件描述符是一个很小的整型值，代表进程可以写入或读取的内核对象。一个进程可以通过打开一个文件、一个目录、一个设备，创建一个管道（pipe），复制一个已存在的文件描述符来获得一个文件描述符。为了简单起见，我们通常将一个文件描述符所指的对象称为"file"，文件描述符抽象出files、pipes和devices之间的差异，使它们看起来像字节流。每个进程都有一个从零开始的文件描述符私有空间。按照惯例，0是标准输入，1是标准输出，2是标准错误输出。shell确保它一定有3个文件描述符打开，这三个文件描述符是默认的对于console来说。
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW2_1.jpg)
+![](./image/HW2_1.jpg)
 
 `read`和`write`这两个system call从打开的名字为文件描述符的文件中读取或者写入。每一个指向文件的文件描述符都有一个offset，他们从当前文件的offset处开始读取，并且将offset向前推进读取的字节数。当没有更多bytes的时候读取的时候，`read`返回0表示文件的结束；与读取文件类似，将数据写入到文件也是从offset处开始写，并且同样将offset向前推进写入的字节数。
 
 `close`system call释放一个文件描述符，让它可以被之后的`open`、`pipe`或者`dup`等system call重新使用。一个新分配的文件描述符，总是当前进程中一个数很小没有被使用过的描述符。文件描述符和`fork`相互作用使得IO重定向很容易实现。`fork`复制父进程的文件描述符表和内存，这样子进程从与父进程完全相同的打开的文件开始。`exec`system call虽然把调用进程的内存给替代了，但是保留了文件描述符表。这样子可以让shell很容易的通过forking、重新打开已经关掉的文件描述符然后执行新的程序来实现I/O重定向。
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW2_3.png)
+![](./image/HW2_3.png)
 
 虽然`fork`复制了一份文件描述符表，但是每一个文件的offset是在子进程与父进程之间共享，比如下面代码中最终输出的内容是`hello world`
 
@@ -119,7 +119,7 @@ if(fork() == 0) {
 
 上面这段程序，首先父进程通过调用`pipe`创建了一个管道（pipe）和两个文件描述符，并将这两个文件描述符存到了p数组中，其中p[0]表示管道的读取端（也就是通过这个描述符可以从管道中读取数据）。之后进行`fork`出一个子进程，这个子进程和父进程拥有相同的指向管道的文件描述符。之后子进程关掉了文件描述符0，通过`dup`操作把p[0]这个文件描述复制给了文件描述符0，然后把子进程的两个用于管道描述符的给关掉了，并开始调用`exec`，这个时候wc当从文件描述符0读取内容的时候，实际上是从管道中读取内容，在父进程中首先将管道读取端的描述符close掉，然后通过p[1]将`hello world\n`写到管道中，在之后管道描述符。大致流程如下所示：
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW2_2.png)
+![](./image/HW2_2.png)
 
 **在管道中假如没有数据，那么`read`调用会一直等待管道的数据被写入，或者指向管道写入端的文件描述符全都被关掉，对于后者来说`read`返回的是0。**
 
@@ -209,7 +209,7 @@ UNIX将‘‘standard’’ file descriptors、pipes和对操作来说方便的s
 
 处理器为强隔离提供了硬件上的支持，举个例子，x86处理器可以在执行指令的时候有两种模式：kernel mode 和user mode，这点很多其他的处理器也一样。在kernel mode下，处理器允许执行privileged instructions，比如读写磁盘文件或者其他I/O设备需要privileged instructions。如果一个user mode下的程序想要尝试执行，privileged instructions，处理器将不会执行这条指令，而是切换到kernel mode，这样子在kernel mode下的software可以清楚掉这个应用程序，因为它做了它不该做的。an application只能执行user mode下可以使用的指令，并且只能跑在用户空间上，然而kernel mode下的software也可以执行privileged instructions，这个是跑在kernel space上的。跑在kernel space上或者kernel mode下的软件叫做kernel。
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW3_0.png)
+![](./image/HW3_0.png)
 
 an application想要读写一个在disk上的file，必须转变到内核里去执行，因为application本身不能执行I/O指令。处理器提供了一个特殊的指令，可以将处理器从user mode转变为kernel mode，并且在特定的内核进入点进入kernel（x86就提供了`int`指令）。一旦处理器转变为kernel mode，内核就可以验证system call的参数了，决定是否允许这个application去执行请求的操作，可能拒绝也可能执行。内核设置了转变为kernel mode的进入点这点是很重要。如果一个程序可以决定这个内核进行点，那么一个恶意的程序可以跳过参数检验而直接进入内核。
 
@@ -219,7 +219,7 @@ an application想要读写一个在disk上的file，必须转变到内核里去�
 
 为了减少kernel错误的风险，OS设计师必须让最小量的操作系统的代码，跑在kernel model中，而操作系统大部分代码则执行在用户模式。这种内核organization叫做microkernel。如下图所示，文件系统则作为一个user-level的进程。
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW3_1.jpg)
+![](./image/HW3_1.jpg)
 
 系统的一些服务如上述的文件系统，则被叫做servers。为了可以和file server通信，内核提供了一个进程间通信的机制，将消息从一个user-mode的进程发送到另一个。举个例子，shell进程想要读写一个文件，那么shell将会发送一个消息给file server，然后等待回复。在microkernel中，kernel的接口由一些low-level的函数组成，用于启动一个应用程序，发送消息，访问硬件设备。这种organization允许内核可以相对简单的，因为操作系统的大部分是作为user-level servers的。
 
@@ -233,7 +233,7 @@ xv6隔离的单元是一个进程，其他Unix操作系统也是这么做的。�
 
 xv6使用通过硬件实现的page tables给每一个进程它自己的地址空间。x86的page table 将一虚拟地址转换（translates or maps）为一物理地址，这个物理地址是处理器芯片（process chips）发送到主存储器的地址。xv6为**每一个进程维持着一张单独的页表（separate page table）,这张表定义了进程的地址空间。 **一个地址空间包括了从虚拟地址0开始的进程的user memory，按照顺序依次为指令，global variables，stack，以及最后的堆区（for malloc），当然process需要的时候可以扩展。如下图所示：
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW3_2.jpg)
+![](./image/HW3_2.jpg)
 
 每一个进程的地址空间都映射着内核的指令和数据以及用户程序的内存。当一个process调用一个system call，这system call在进程地址空间的内核映射区执行。而正是因为这种安排，内核的system call code可以直接引用user memory。为了给user memory留下足够的空间，xv6的地址空间把kernel映射到从0x80000000开始的高地址处。
 
@@ -241,7 +241,7 @@ xv6内核为每一个进程维护着许多状态块，状态块的信息收集�
 
 当一个进程调用了一个system call，处理器转移到内核栈，提高hardware privilege level，然后开始执行实现了system call的内核指令。当system call执行完成，内核返回到user space，降低hardware privilege level，切换回到user stack并且重新执行用户指令。一个进程的线程可以在内核中阻塞（block）去等待I/O，当他执行完I/O操作之后，然后从它结束的地方重新开始。
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW3_3.png)
+![](./image/HW3_3.png)
 
 p->state表明进程是否已经被分配了的，是否准备好运行了，等等。
 
@@ -426,7 +426,7 @@ found:
 
 经过上述步骤，一个配置好的kernel stack如下图所示：
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW3_7.jpg)
+![](./image/HW3_7.jpg)
 
 `allocproc`将会对这个新的进程配置一个准备好的特别格式的kernel stack和一组kernel寄存器，这组寄存器可以让它在第一次执行的时候返回user space。（部分返回的工作，主要借助于返回程序计数器来实现，这些返回程序计数器的值将会让进程的内核线程首先执行`forkret`然后再执行`trapret`。这点主要是因为内核线程会执行从p->context拷贝过来的寄存器内容，因此当设置p->context->eip为forkret时将会导致内核线程先执行forkret，而forkret将会返回stack底部的任何地址。然后context switch code将会设置stack pointer指向刚刚超过p->context末尾位置的地方。在`allocproc`函数中，它把p->context置于stack中，并且让一个指针指向它上方的trapret，而这个位置也是forkret将会返回的地方。之后trapret通过存储在kernel stack上方的值来恢复用户寄存器，并且跳转到进程中）。普通`fork`和创建第一次进程时候都会执行上述返回的步骤，只是后者将会在user-space为0的地方开始执行而不是从`fork`返回的地方执行。
 
@@ -436,7 +436,7 @@ found:
 
 进程的一些初始化工作完成之后，将准备执行第一个进程的第一个程序（initcode.S（8400））。进程需要物理内存来存储该程序，之后该程序会复制到该内存，并且进程需要一个页表来将用户空间地址映射到该内存。`userinit`调用`setupkvm`给一个进程创造一个page table，在最开始的时候，这个page table仅仅映射kernel 使用的内存。我们将会在chapter2学习这个函数细节，但是在高级的`setupkvm`和`userinit`中，将会创造一个地址空间就像下图所示一样：
 
-![](E:/%E7%A0%94%E7%A9%B6%E7%94%9F%E9%98%B6%E6%AE%B5/MIT6.828/notes/image/HW3_2.jpg)
+![](./image/HW3_2.jpg)
 
 第一个进程的user-space内存的初始化内容是initcode.S的编译形式。作为kernel build process的一部分，linker将该二进制代码嵌入到内核中，并且定义了两个特殊的符号_binary_initcode_start and _binary_initcode_size，这两个符号表示binary的起始位置和大小。userinit通过调用inituvm把这个二进制文件拷贝到新进程的内存：inituvm分配一个物理页，然后映射虚拟地址0到该内存，然后将二进制文件拷贝进那个物理页。
 

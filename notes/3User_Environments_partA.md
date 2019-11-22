@@ -184,7 +184,7 @@ env_setup_vm(struct Env *e)
 
 其中`p = page_alloc(ALLOC_ZERO)`分配了一个新的页用作page directory，所以需要将这个页的物理地址赋值给`e->env_pgdir`，同时该页的引用需要+1。接下去的两个循环中的代码是我没想到的，主要是对页目录进行初始化，因为从Lab2中的那张虚拟地址空间分布图，我们可以知道从UTOP以上在kern_pgdir中已经映射好了的，所有environment的地址空间都应该有这个映射，所以从UTOP到NPDENTRIES（页目录项最多为1024）为kern_pgdir中相应的内容。
 
-![](./image/JOS_mem_layout.jpg)
+![](./image/Lab3_18.jpg)
 
 ---
 
