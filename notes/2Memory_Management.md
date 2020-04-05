@@ -128,7 +128,7 @@ i386_detect_memory(void)
 }
 ```
 
-最开始的时候说过，0xA0000\~0x100000，这部分是IO hole，是不可用的；那么剩下的，0x00000\~0xA0000，这部分叫做basemem，是可用的；IO hole后面那段0x100000~0x，这部分则叫做extmem，也是可以用的，是最重要的内存区域。
+最开始的时候说过，0xA0000\~0x100000，这部分是IO hole，是不可用的；那么剩下的，0x00000\~0xA0000，这部分叫做basemem，是可用的。
 
 获得了可使用的物理内存空间之后，回到`mem_init()`函数，之后要为页目表分配一块内存空间，大小为一个`PGSIZE`即一个页的大小，这个页目录是分页转化机制中一个非常重要的表：
 
@@ -263,7 +263,7 @@ page_free(struct PageInfo *pp)
 
 在这个部分，**请先熟悉x86的保护模式下的内存管理体系**：叫做 segmentation和page translation.
 
-*Exercise 2*：请一定要先查阅 [Intel 80386 Reference Manual](https://pdos.csail.mit.edu/6.828/2018/readings/i386/toc.htm) 的chapters 5和6。阅读关于与page translation和page-based protection更close的sections，比如5.2和6.4。当然也推荐你看一下关于segmentation的sections，虽然在x86上，JOS上并不使用segment translation和segment-based protection，它仅使用paging hardware来提供虚拟内存和保护，但是对它有个基础的理解比较好。
+*Exercise 2*：请一定要先查阅 [Intel 80386 Reference Manual](https://pdos.csail.mit.edu/6.828/2018/readings/i386/toc.htm) 的chapters 5和6。阅读与page translation和page-based protection更close的sections，比如5.2和6.4。当然也推荐你看一下关于segmentation的sections，虽然在x86上，JOS上并不使用segment translation和segment-based protection，它仅使用paging hardware来提供虚拟内存和保护，但是对它有个基础的理解比较好。
 
 ### Virtual, Linear, and Physical Addresses
 
@@ -288,7 +288,7 @@ JOS kernel经常需要把地址处理为opaque values或者integers，而不dere
 | uintptr_t  | Virtual      |
 | physaddr_t | Physical     |
 
-JOS有时候需要读取或者修改只知道物理地址的内存。比如，在page table中添加一个映射的时将会要求分配物理内存来存储page directory，之后初始化这块memory。但是内核不能饶过虚拟地址的转换，因此不能直接加载或者存储到这个物理地址中。为此JOS将物理地址0开始的内存重新映射到虚拟地址0xf0000000开始的地方就是为了让kernel在只知道物理地址读取内存。为了将一个物理地址转换为虚拟地址，kernel必须将物理地址加上0xf0000000来找到它在重新映射区域相关联的虚拟地址，可以使用`KADDR(pa)`来实现这个。
+JOS有时候需要读取或者修改只知道物理地址的内存。比如，在page table中添加一个映射的时将会要求分配物理内存来存储page directory，之后初始化这块memory。但是内核不能饶过虚拟地址的转换，因此不能直接加载或者存储到这个物理地址中。**为此JOS将物理地址0开始的内存重新映射到虚拟地址0xf0000000开始的地方就是为了让kernel在只知道物理地址读取内存。**为了将一个物理地址转换为虚拟地址，kernel必须将物理地址加上0xf0000000来找到它在重新映射区域相关联的虚拟地址，可以使用`KADDR(pa)`来实现这个。
 
 JOS有时候需要在给定一个虚拟地址的情况下找到一个物理地址。kernel的全局变量和由`boot_alloc()`分配的内存都是在kernel会加载的区域也就是0xf0000000开始的区域，而我们也正好将所有物理内存都映射到这个区域。因此这个区域中虚拟地址转换为物理地址，kernel只需要简单的减去0xf0000000，可以使用`PADDR(va)`来实现这个。
 
@@ -424,7 +424,7 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 
 ## Part 3: Kernel Address Space
 
-JOS将处理器的32-bit 线性地址空间分成两部分。在Lab3被加载和运行的user environment(processes)，将会占据 lower part，而kernel将会维持upper part的完成控制。这dividing line由`inc/memlayout.h`中`ULIM`定义的。我们为kernel保留了大约256MB的虚拟地址空间。这也就解释了在Lab1中为什么我们需要给kernel一个如此高的link address，否则的话，kernel的虚拟地址空间中将没有足够多的空间来映射user environment。
+JOS将处理器的32-bit **线性地址空间**分成两部分。在Lab3被加载和运行的user environment(processes)，将会占据 lower part，而kernel将会维持upper part的完成控制。这dividing line由`inc/memlayout.h`中`ULIM`定义的。我们为kernel保留了大约256MB的虚拟地址空间。这也就解释了在Lab1中为什么我们需要给kernel一个如此高的link address，否则的话，kernel的虚拟地址空间中将没有足够多的空间来映射user environment。
 
 在`inc/memlayout.h`中给出了图示版的JOS memory layout，这对这个Lab以及之后的Lab都是很有用的。
 
@@ -509,11 +509,11 @@ Question4：这个操作系统最大支持的内存大小是多大？
 
 Question5：如何达到了最大数量的物理内存，那么所需要的额外开支是多大？
 
-首先是需要存放所有的PageInfo，需要4MB，需要存放页目表表，kern_pgdir，4KB，之后是存放页表512*4KB = 2MB，所以额外需要6MB+4KB
+首先是需要存放所有的PageInfo，需要4MB，需要存放页目表，kern_pgdir，4KB，之后是存放页表1024*4KB = 4MB，所以额外需要8MB+4KB
 
 Question6：`entry.S`文件中，当分页机制开启的时候，寄存器EIP的值是一个很小的值，在哪个位置代码才开始运行在高于KERNBASE的虚拟地址空间中的？当程序位于开启分页之后到运行在KERNBASE之上这之间的时候，EIP的值是很小的值，怎么保证可以把这个值转化为真实物理地址？
 
-在`entry.S`文件中有一个指令`jmp *%eax`，这个指令要完成跳转，就会重新设置EIP的值，把它设置为寄存器eax中的值，而这个值是大于KERNBASE的，所以就完成了EIP从小的值到大于KERNBASE的值的转换。
+在`entry.S`文件中有一个指令`jmp *%eax`；由于[0x00000000\~0x00400000]的虚拟地址空间也被映射到了[0x00000000\~0x00400000]的物理地址空间，所以可以确保把这个值转化为真实的物理地址。
 
 ## 总结
 
@@ -701,11 +701,19 @@ pte_t entry_pgtable[NPTENTRIES] = {
 
 ### 地址大杂烩
 
-这边讲一下到目前为止所涉及到的地址：逻辑地址、虚拟地址、线性地址、物理地址、加载地址、链接地址。
+这边讲解一下目前或者操作系统中会接触到几种地址：虚拟地址、逻辑地址、线性地址、物理地址、加载地址、链接地址等。
 
-对于虚拟地址和逻辑地址的理解，虚拟地址空间是相对于物理地址来说的，也就是我们虚拟出来这么一块地址空间，这块地址空间是不存在的，上面的地址就叫做虚拟地址。那么逻辑地址是什么呢？个人觉得逻辑地址在某种程度上等同于虚拟地址，但是逻辑地址更多的是在编程的时候，用到的，逻辑地址经过推导就得到了虚拟地址。
+**虚拟地址（virtual address）**由segement selector和 segment offset组成，C语言的指针就是虚拟地址的offset。这是严格上的定义，但是更多时候，我觉得虚拟地址是泛指，泛指一切非物理地址的地址，比如不存在分页机制时的线性地址，比如C语言的指针虽然严格上说是segment offset，但是我们也可以直接称作虚拟地址；
 
+**逻辑地址（logical address）**其实等同于虚拟地址，其实程序员调试程序时指令中出现的地址是虚拟地址，准确点说是虚拟地址的offset部分；
 
+**线性地址（linear address）**是由虚拟地址经过段式转换之后得到的地址，假如存在分页，那么线性地址还不是真正的物理地址，但是假如不存在分页，那么线性地址跟物理地址值是一样的；
+
+**物理地址（physical address）**则是最后被送到RAM的地址了，这是RAM上使用的地址，通过该地址可以找到真正相应位置上的内容；
+
+**链接地址（link address）**，是程序希望被执行的地址，也就是相当于程序链接之后，是从这个地址开始的计算，也就是程序中指令都是基于这个地址开始的；
+
+**加载地址（load address）**，是程序被加载之后的地址，个人感觉这两个地址都算是虚拟地址；
 
 ## 附：段转化机制的详细讲解
 
@@ -769,10 +777,6 @@ pte_t entry_pgtable[NPTENTRIES] = {
 
 这些可见的部分可以被程序所操作，就像他们是一个16位的寄存器一样，这些不可见的部分是被处理器所操作。处理器自动从描述符表中提取基本地址、限制、类型和其他信息，并将它们加载到段寄存器的不可见部分。当指令需要操作段中的数据时，因为段中的选择器已经被段寄存器了，一些相关信息也被加载到了段寄存器，所以处理器可以将指令中提供的段相对偏移量直接添加到段的基址中，而不需要额外的开销。
 
-## 附：分页、分段、段页式存储管理方式（本科书本）
 
-分页存储管理将进程的逻辑地址空间分成若干个页，并为各页加以编号；同时把内存的物理地址空间分成若干个块，同时也为它们加以编号。在为进程分配内存时，以块为单位，将进程的若干个页分别装入到多个可以不相邻接的物理块中。
-
-页表：在分页系统中，允许将进程的各个页分散地存储在内存的任一物理块中，为保证进程仍然能够正确地运行，即能在内存中找到每个页面所对应的物理块，系统又为每个进程建立了一张页面影响表，简称页表。进程地址空间内的所有页（0~n），依次在页表中有一页表项，其中记录了相应页在内存中对应的物理块号。**页表的作用是实现从页号到物理块号的地址映射。**
 
  

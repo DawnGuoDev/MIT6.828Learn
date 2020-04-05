@@ -1,6 +1,6 @@
-在这个Lab中，我们将要实现基础的内核设施，让一个被保护的用户模式的environment成功运行（比如process）。我们将要去实现一个可以跟踪用户environment的数据结构，创建一个单独的用户environment并且把一个程序的镜像加载到里面，最后还要运行它。我们也会让JOS有能力去处理任何的system call并且处理它产生的异常。
+在这个Lab中，我们将要实现基础的内核设施，让一个被保护的user mode environment成功运行（比如process）。我们将要去实现一个可以跟踪用户environment的数据结构，创建一个单独的用户environment并且把一个程序的镜像加载到里面，最后还要运行它。我们也会让JOS有能力去处理任何的system call并且处理它产生的异常。
 
-> 上述中，术语`environment`和`process`是可以交换的，他们都指向一个抽象的东西，可以让你运行一个程序。我么使用`environment`而不是传统的`process`是为了强调JOS environment和UNIX进程提供的是不同的接口。所以在不好理解`environment`的时候，我们可以拿`process`的概念来理解。
+> 上述中，术语`environment`和`process`是可以交换的，他们都指向一个抽象的东西，可以让你运行一个程序。我们使用`environment`而不是传统的`process`是为了强调JOS environment和UNIX进程提供的是不同的接口。所以在不好理解`environment`的时候，我们可以拿`process`的概念来理解。
 
 经过Lab3中git的相关操作之后，Lab3多出了以下这些文件
 
@@ -91,7 +91,7 @@ struct Env {
 
 就像一个Unix 内核，一个JOS environment也将“thread”和“address space”的概念耦合起来。thread主要由保存的寄存器值定义（env_tf），addree space 由页目表和页表来定义（env_pgdir）。要想真正的运行一个环境，kernel必须用保存的寄存器的值和合适的address space设置好CPU.
 
-> struct Env和xv6中struct proc是类似的，它们**两个都将user mode中的寄存器状态存在Trapframe结构中**。但是在JOS中一个environment没有拥有它自己的kernel stack（xv6是有的），所以在kernel的某一个时间点只能有一个JOS environment，因此JOS有一个kernel stack就好了。
+> struct Env和xv6中struct proc是类似的，它们**两个都将user mode中的寄存器状态存在Trapframe结构中**。但是在JOS中一个environment没有拥有它自己的kernel stack，也就是相当所有evniroments所使用的kernel stack都是一样的（xv6是有的），所以在kernel的某一个时间点只能有一个JOS environment，因此JOS有一个kernel stack就好了。
 >
 > Lab中我们只需初始化一个environment，但是你需要将JOS设计成支持多个environments的。
 
@@ -118,7 +118,7 @@ boot_map_region(kern_pgdir, UENVS, PTSIZE, PADDR(envs), PTE_U);
 
 ### Creating and Running Environments
 
-接下去就是创建和运行一个environment了，因为我们还没有文件系统，所以kernel会加载一个静态二进制镜像，将它嵌入到内核中，JOS将它作为一个ELF可执行image。在`kern/init.c`中的`i386_init()`函数中将会有代码在环境中运行这些二进制镜像。为了可以让其真正的运行起来，我们需要在`env.c`中补充完成一些函数。
+接下去就是创建和运行一个environment了，因为我们还没有文件系统，所以kernel会加载一个静态二进制镜像，将它嵌入到内核中，JOS将它作为一个ELF可执行image。在`kern/init.c`中的`i386_init()`函数中将会有代码让environment运行这些二进制镜像。为了可以让其真正的运行起来，我们需要在`env.c`中补充完成一些函数。
 
 我们首先需要补充的是`env_init`，这个函数主要做的工作是初始化envs数组中所有的Env结构体（Env结构体中的env_ids设置为0），并且将它们添加到env_free_list中，同时需要保证env_free_list中的Env顺序是与envs数组中的顺序是一样，也就是说当我们第一次调用`env_alloc()`的时候，分配给我们的是envs[0]。所添加的代码如下，除了env_ids设置为0之外，对Env结构的其他属性也进行了初始化。
 
@@ -150,7 +150,7 @@ env_init(void)
 
 ---
 
-再接下去是`env_setup_vm`的实现，这个函数主要实现的是给一个新的environment分配一个page directory，并且初始化新environment地址空间的kernel位置，整体代码如下：
+再接下去是`env_setup_vm`的实现，这个函数主要实现的是给一个新的environment分配一个page directory，并且初始化新environment地址空间的kernel位置，整体代码如下
 
 ```c
 static int
@@ -167,7 +167,6 @@ env_setup_vm(struct Env *e)
   e->env_pgdir =(pde_t *)page2kva(p);
   p->pp_ref++;
 
-  // the below code i can't think
   for(i = 0; i < PDX(UTOP); i++){
     e->env_pgdir[i] = 0;
   }  
@@ -264,7 +263,7 @@ load_icode(struct Env *e, uint8_t *binary)
 }
 ```
 
-在上述代码中，我们需要对elf文件的e_magic进行判断，判断它是不是一个ELF文件，之后判断入口地址是不是存在，同时我们需要这一步：` e->env_tf.tf_eip = elf_head->e_entry;`，该步在调用enviroment中二进制程序的时候会用到，同时`lcr3(PADDR(e->env_pgdir));`这一步我个人的理解是，因为下面的加载操作都是把ELF文件加载到该environment的地址空间中，所以需要使用这个地址空间的page directory。
+在上述代码中，我们需要对elf文件的e_magic进行判断，判断它是不是一个ELF文件，之后判断入口地址是不是存在，同时我们需要这一步：` e->env_tf.tf_eip = elf_head->e_entry;`，该步在调用enviroment中二进制程序的时候会用到，同时`lcr3(PADDR(e->env_pgdir));`这一步我个人的理解是，因为下面的加载操作都是把ELF文件加载到该environment的地址空间中，所以需要使用这个地址空间的page directory。假如不加载进程自己的页表，还是使用kernel使用的页表，那么针对同样的虚拟地址，那么很有可能把kernel的某些数据给覆盖了，所以这是不行的。
 
 ---
 
@@ -325,7 +324,7 @@ i386_init (kern/init.c)
     env_pop_tf
 ```
 
-将上述代码完成之后，当你编译整个JOS内核代码的并运行在qemu上的时候，它会成功运行。系统会进入用户空间并且执行`hello`二进制程序直到它使用`int`指令调用system call。由于JOS在硬件上还没有允许任何从user态模式到kernel态模式的状态，所以这是将会出错。当CPU发现还没有设置处理system call中断的时候，它将会产生一个通用的保护异常；当发现不能处理这个保护异常的时候，又会产生一个not present fault（double fault），结果发现两个都不能处理，最后以“triple fault”放弃。
+将上述代码完成之后，当你编译整个JOS内核代码的并运行在qemu上的时候，它会成功运行。系统会进入用户空间并且执行`hello`二进制程序直到它使用`int`指令调用system call。由于JOS在硬件上还没有允许user mode到kernel mode的转换，所以这将会出错。当CPU发现还没有设置处理system call中断的时候，它将会产生一个通用的保护异常；当发现不能处理这个保护异常的时候，又会产生一个not present fault（double fault），结果发现两个都不能处理，最后以“triple fault”放弃。
 
 > 一旦产生上述的`triple fault`之后，CPU将会重置系统将会重启，但是6.828给qemu打了一个补丁，所以你将会看见寄存器转储和一条"Triple fault"消息。
 
@@ -333,7 +332,7 @@ i386_init (kern/init.c)
 
 ![](./image/Lab3_1.jpg)
 
-运行到这个函数之后，使用单步调试指令`si`，在`iret`指令之后将会进入user mode，这时候你将会user environment的执行程序的第一条指令`cmp`。
+运行到这个函数之后，使用单步调试指令`si`，在`iret`指令之后将会进入user mode，这时候你将会看到user environment的执行程序的第一条指令`cmp`。
 
 ![](./image/Lab3_2.jpg)
 
@@ -370,7 +369,7 @@ asm volatile("int %1\n"
 
 -  **Interrupt Descriptor Table**
 
-  x86允许通过256个不同中断或异常的进入点进入kernel，256个中断或异常都有唯一一个interrupt vector（从0~255）。CPU使用中断向量作为IDT表（IDT表建立在kernel-private 内存中）的index，然后从适当的table条目（ Interrupt Descriptor）中加载
+  x86允许通过256个不同中断或异常的进入点进入kernel，256个中断或异常都有唯一一个中断向量（从0~255）。CPU使用中断向量作为IDT表（IDT表建立在kernel-private 内存中）的index，然后从适当的table条目（ Interrupt Descriptor）中加载
 
   - 要**加载到EIP（instruction pointer）寄存器**的值，这个值指向了处理指定异常的kernel处理代码；
   - 要**加载到CS（code segement）寄存器**的值，值里面包含了第0-1位的特权等级值，异常处理程序正是运行在这个特权等级下。（JOS中所有的异常都是在kernel mode下处理的，特权等级全都为0）
@@ -400,7 +399,7 @@ asm volatile("int %1\n"
 
 ![](./image/Lab3_14.jpg)
 
-而对于有error code的异常来说，只需要再压入一个error code就可以。但是对于嵌套的异常来说，假如在异常处理过程又出现异常或中断，但是此时不能把old state的值压入栈中，那么处理器只是简单的重启。
+而对于有error code的异常来说，只需要再压入一个error code就可以。另外对于嵌套的异常来说，假如在异常处理过程又出现异常或中断，但是又不能把old state的值压入栈中，那么处理器则简单的重启。
 
 #### 实验---IDT表的建立
 
@@ -469,7 +468,7 @@ TRAPHANDLER_NOEC(simderr_handler, T_SIMDERR)
 TRAPHANDLER_NOEC(syscall_handler, T_SYSCALL)
 ```
 
-每一个handler都要建立自己的`struct Trapframe`，并且最后要调用trap()函数，而每一个handler都会调用`_alltraps`，所以我们需要在`_alltraps`中实现上述要求即可。 根据Lab中的提示，`_alltraps`实现如下
+每一个handler都要建立自己的`struct Trapframe`，并且最后要调用trap()函数，而每一个handler都会跳转到`_alltraps`，所以我们需要在`_alltraps`中实现上述要求即可。 根据Lab中的提示，`_alltraps`实现如下
 
 ```assembly
 /*

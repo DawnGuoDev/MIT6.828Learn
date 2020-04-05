@@ -578,7 +578,7 @@ boot loader中的链接地址和加载地址是一致的，但是在kernel中，
 
 OS kernel往往喜欢被链接到并且运行在非常高的virtual address，比如0xf0100000，为了把处理器的虚拟地址的地址部分留给user programs使用。至于什么是虚拟地址，虚拟地址空间是什么，为什么kernel运行在虚拟地址的高地址区域，这些都会在下一个lab中讲述。
 
-但是很多机器其实没有能够支持0xf0100000这么大地址的物理内存，所以我不能指望在0xf0100000处存储kernel。相反，我们会使用处理器的内存管理硬件把virtual address 0xf0100000（link address，这是kernel code期望运行的地址）映射到physical address 0x00100000（kernel被真正加载的物理地址）。这种方式，尽管kernel的虚拟地址是非常高可以留下足够的地址空间给用户进程，但是它还是会被加载到物理地址为1MB（0x00100000）的地方。这种方式要求PC至少有几MB的物理内存，这样子物理地址0x00100000才能工作，那么在1990之后的PC机都可以了。
+但是很多机器其实不支持0xf0100000这么大地址的物理内存，所以我不能指望在0xf0100000处存储kernel。相反，我们会使用处理器的内存管理硬件（MMU）把virtual address 0xf0100000（link address，这是kernel code期望运行的地址）映射到physical address 0x00100000（kernel被真正加载的物理地址）。这种方式，尽管kernel的虚拟地址是非常高可以留下足够的地址空间给用户进程，但是它还是会被加载到物理地址为1MB（0x00100000）的地方。这种方式要求PC至少有几MB的物理内存，这样子物理地址0x00100000才能工作，那么在1990之后的PC机都可以了。
 
 在下个lab中，我们将会把PC物理地址空间底部256MB的部分（0x00000000\~0x0fffffff）映射到虚拟地址0xf0000000\~0xffffffff处。那么你也就知道为啥JOS只能使用第一块256MB的物理内存了。然而现在我们只需要映射4MB的物理内存，我们在`kern/entrypgdir.c`中使用hand-written、statically-initialized page directory和page table。现在暂时不需要理解它是怎么工作的，只需要知道这么实现的作用会有哪些。直到`kern/entry.S`设置了`CR0_PG` flag，memory references才会被当成physical address，直接点说就是，它们是linear addresses，但是`boot/boot.S`设置了从linear addresses到physical address的转换。一旦`CR0_PG`被设置了，memory references是virtual addresses，这些virtual addresses将会被virtual memory硬件转换为physical addresses。`entry_pgdir`将虚拟地址0xf0000000\~0xf0400000转化到物理地址0x00000000\~0x00400000，也可以将虚拟地址范围为0x00000000\~0x00400000转化到物理地址0x00000000\~0x004000000上。任何不在这两个虚拟地址范围内的虚拟地址都会引起一个  hardware exception , 由于还没有设置interrupt handling，所以将会让QEMU开始dump这台机器并且退出或者如果没有使用6.828-patched 版本的QEMU，那么将会无休止的reboot。
 
@@ -848,26 +848,19 @@ K>
 
 ### kernel entry.S的分析
 
-下面我们通过qemu和gdb工具并结合entry.S文件来对entry.S文件进行一个学习。打开两个终端后，先在一个终端中执行`make qemu-nox-gdb`命令，之后在另一个终端中执行`make gdb`命令，并通过`b`指令在0x0010000c处设置一个端点，运行`c`指令调试至断点处，然后一步一步接下去一步步调试。首先是运行至断点处，情况如下，entry.S的第一条指令是`movx $0x1234, 0x472 `，指令地址是0x0010000c。这个是因为上述boot loader程序是把内核文件全部加载到物理内存为0x100000处了。
+下面我们通过qemu和gdb工具并结合entry.S文件来对entry.S文件进行一个了解。打开两个终端后，先在一个终端中执行`make qemu-nox-gdb`命令，之后在另一个终端中执行`make gdb`命令，并通过`b`指令在0x0010000c处设置一个端点，运行`c`指令调试至断点处，然后一步一步接下去一步步调试。首先是运行至断点处，情况如下，entry.S的第一条指令是`movx $0x1234, 0x472 `，指令地址是0x0010000c。
 
 ![](./image/Lab1_5.jpg)
 
-之后继续运行，直到运行到`jmp *%eax`这条指令后，我们发现地址都变成了虚拟地址了。
-
-![](./image/Lab1_6.jpg)
-
-上图中我们发现指令地址都变成了虚拟地址了，我们需要将其转化为物理地址才行。如上述的0xf010002f这个虚拟地址，这个地址对应的实际物理地址是0x0010002f，因为所有的内核代码都放在这个区域中。为了实现这种转化的机制即把虚拟地址转换为物理地址，那么entry.S中的是通过下面这些代码来实现这个机制的：
+那么相应的`kern/entry.S`中的文件内容也是如此，
 
 ```assembly
-# We haven't set up virtual memory yet, so we're running from
-# the physical address the boot loader loaded the kernel at: 1MB
-# (plus a few bytes).  However, the C code is linked to run at
-# KERNBASE+1MB.  Hence, we set up a trivial page directory that
-# translates virtual addresses [KERNBASE, KERNBASE+4MB) to
-# physical addresses [0, 4MB).  This 4MB region will be
-# sufficient until we set up our real page table in mem_init
-# in lab 2.
+movw  $0x1234,0x472     # warm boot
+```
 
+那么接下去比较重要的部分了-**设置并使能页表**。相应的源码如下所示，
+
+```assembly
 # Load the physical address of entry_pgdir into cr3.  entry_pgdir
 # is defined in entrypgdir.c.
 movl    $(RELOC(entry_pgdir)), %eax
@@ -878,9 +871,9 @@ orl     $(CR0_PE|CR0_PG|CR0_WP), %eax
 movl    %eax, %cr0
 ```
 
-上述代码中，第一句`movl $(RELOC(entry_pgdir)), %eax`的功能是把entry_pgdir这个页表的起始物理地址送给%eax，这里RELOC宏的功能是计算输入参数的物理地址。第二句`movl %eax, %cr3`是把entry_pgdir这个页表的起始地址传送给寄存器%cr3。后面几句就是修改%cr0寄存器的值，把cr0的PE位，PG位, WP位都置位1，其中PG位是分页标识符，如果这一位置为1则代表开启了分页机制。
+上述代码中，第一句`movl $(RELOC(entry_pgdir)), %eax`的功能是把entry_pgdir这个页表的起始物理地址送给%eax，这里RELOC宏的功能是计算输入参数的物理地址（这边为什么需要reloc呢？个人觉得是因为在编写内核代码的时候，是从虚拟地址0xf0100000开始的，所以内核代码都是从0xf0100000开始的）。第二句`movl %eax, %cr3`是把entry_pgdir这个页表的起始地址传送给寄存器%cr3。后面几句就是修改%cr0寄存器的值，把cr0的PE位，PG位, WP位都置位1，其中PG位是分页标识符，如果这一位置为1则代表开启了分页机制。简单来说CR0是使能分页机制的，CR3是存放页表（或者说是页目录）首地址的。
 
-上述代码的功能我们通过注释也可以看到，在执行上述代码之前还没有建立虚拟地址。而上述代码就是实现转换的机制，主要是写了一个C语言的页表，entry_pgdir，这个手写的页表可以自动的把[0xf0000000-0xf0400000]这4MB的虚拟地址空间映射为[0x00000000-0x00400000]的物理地址空间，可见这个页表的映射能力是有限的，只能映射一个区域。但是对当前执行的指令来说，这个映射空间已经足够了，因为内核程序他们的虚拟空间地址范围就是在[0xf0000000-0xf0400000]之内，但是当操作系统真正的运起来之后，这个映射就不够用了。必须采用更全面的页表机制，所以entry_pgdir这个页表就将不会再使用了（lab2中会建立更加全面的页表机制）。
+通过注释也可以看到，在执行上述代码之前还没有设置和使能页表。而上述代码执行完之后，已经有了相应的页表，并且使能了分页转换机制，那么当碰到一个memory reference之后，都会进行转换，所以给出的地址引用必须是一个准确有效的虚拟地址，这样才能转换成功。而此时的页表是用C语言手写的一个页表，这个页表可以把[0xf0000000-0xf0400000]这4MB的虚拟地址空间映射到[0x00000000-0x00400000]的物理地址空间，同时也会把 [0x00000000-0x00400000]这4MB的虚拟地址空间映射到 [0x00000000-0x00400000]的物理地址空间。虽然映射区域不大，但是对当前执行的指令来说，这个映射空间已经足够了，而且内核程序他们的虚拟空间地址范围就是在[0xf0000000-0xf0400000]之内。那么当操作系统真正的运行起来之后，这个映射就不会用了，而是采用一个映射区域更加大的页表（这个实现是在lab2中实现的）。
 
 再接下去就是这两条指令，
 
@@ -889,9 +882,13 @@ mov    $relocated, %eax
 jmp    *%eax
 ```
 
-在实际调试过程中，这两条指令如下，可见relocated的值为0xf010002f，此时这个分页系统会把这个虚拟地址转换为真实的物理地址。
+在实际调试过程中，这两条指令如下，可见relocated的值为0xf010002f。前面的代码已经使能了页表，那么所有的memory reference都会进行转换，那么此时这两条指令都是低地址，进行转换的话不会出错吗？照理来说高地址转换才会正确的勒？这是因为此时的页表也将[0x00000000-0x00400000]这4MB的虚拟地址空间映射到 [0x00000000-0x00400000]的物理地址空间，所以也是可以正常运行的。那么既然低地址空间可以运行，还需要跳转到高地址空间运行呢？因为内核期望运行的是高地址空间，所以我们在使能页表之后还是让它运行在高地址处吧。
 
 ![](./image/Lab1_7.jpg)
+
+jmp指令之后继续运行，我们发现地址都变成了虚拟地址了。
+
+![](./image/Lab1_6.jpg)
 
 最后就到了堆栈初始化阶段了，
 
@@ -909,27 +906,37 @@ movl    $(bootstacktop),%esp
 
 ![](./image/Lab1_8.jpg)
 
-上述指令中，第一条指令`movl $0x0,%ebp`是将ebp的值设为0。第二条指令`movl    $(bootstacktop),%esp`中bootstacktop的值为0xf0110000（虚拟地址），那么相应的esp的值也就设为了0xf0110000，其中esp为x86的堆栈指针寄存器，指向整个堆栈正在被使用的部分的最低地址，需要注意的是堆栈由于是向下生长的，所以栈底为0xf0110000.
+上述指令中，第一条指令`movl $0x0,%ebp`是将ebp的值设为0。第二条指令`movl    $(bootstacktop),%esp`中bootstacktop的值为0xf0110000（虚拟地址），那么相应的esp的值也就设为了0xf0110000，其中esp为x86的堆栈指针寄存器，指向整个堆栈正在被使用的部分的最低地址，需要注意的是堆栈由于是向下生长的，所以栈底为0xf0110000。整个栈的实现如下所示：
 
 ```assembly
+.data
+  .p2align  PGSHIFT   
+  .globl    bootstack
 bootstack:
-        .space          KSTKSIZE
-        .globl          bootstacktop
+  .space    KSTKSIZE
+  .globl    bootstacktop
 bootstacktop:
 ```
 
-文件末尾还定义了一个值，bootstack，这个数据段代表的是用于堆栈的大小，其中KSTKSIZE=8\*PGSIZE=8\*4KB=32KB，所以用于堆栈的地址空间为0xf0108000\~0xf0110000，但是这是虚拟地址，所以实际上这个堆栈坐落在内存为
+从data区域开始，先进行对齐，也就是找一个跟PGSHIFT对齐的地址，之后是空出一块KSTKSIZE=8\*PGSIZE=8\*4KB=32KB大小的空间，用于堆栈，同时该块空间最后的地址是bootstacktop。根据kernel 的ELF头可知堆栈的地址空间为0xf0108000\~0xf0110000，这是虚拟地址空间的，那么对应的物理地址空间区域为0x00108000\~0x00110000中。
 
-0x00108000\~0x00110000的物理地址空间中。
-
-最后一条指令是
+entry.S倒数第二条指令是调用`kern/init.c`文件中的i386_init()函数
 
 ```assembly
 # now to C code
 call    i386_init
 ```
 
-这条指令是调用`kern/init.c`文件的i386_init()函数。
+最后是一条指令如下，正常情况下上述的函数调用是不可能返回的，但是以防万一我们还是添加一下，假如上述函数返回之后，那么就会跳转到该处，而该处则会一直循环。
+
+```assembly
+spin: jmp spin
+```
+
+上述整个过程中有如下两个问题是值得思考的（自己在做的时候想的），那么相应的解答都已经在上述阐述中了。
+
+1. 为什么需要RELOC函数
+2. 为什么需要`jmp`
 
 ## 总结
 
@@ -937,15 +944,15 @@ call    i386_init
 
 2.BIOS启动过程中，CPU采用的是实模式，地址计算为：段基址<<4+段内偏移，获得地址即为真实的物理地址。BIOS主要在控制、初始化、检测底层的设备，但是最重要的是最后加载Boot loader，BIOS把boot loader加载到0x7c00\~0x7dff的地址区域，并将控制权交给boot loader。
 
-3.boot loader程序中包括了boot.S和main.c文件，首先执行的是boot.S文件，**这个文件最重要的功能是将CPU转换为32位的保护模式**；而main.c最主要的功能是加载内核程序，首先是将内核文件的ELF头部读取到0x10000处，之后根据ELF头部信息和Program Header Table，再把内核加载到0x00100000处开始的地方。最后跳转到内核文件的执行入口，自此控制权就转交给了内核。
+3.boot loader程序中包括了boot.S和main.c文件，首先执行的是boot.S文件，**这个文件最重要的功能是将CPU转换为32位的保护模式**；而main.c最主要的功能是加载内核程序，首先是将内核文件的ELF头部读取到0x10000处，之后根据ELF 的Program Header Table，再把内核加载到0x00100000处开始的地方。最后跳转到内核文件的执行入口，自此控制权就转交给了内核。
 
 4.内核文件是一个ELF文件，文件格式为：ELF文件头，程序头表（program header table）、文件内容（包括.text节、.rodata节、.data节等）和节头表(section header table)。其中节内容希望被加载的逻辑地址（链接地址或者虚拟地址）和实际加载的地址（加载地址或物理地址）是不一样的，为此这涉及到了一个地址映射，在内核程序执行期间，这种映射由entry.S文件中手写的一个C语言页表实现。再实现了映射之后，接下去就是堆栈的初始化，堆栈中最重要的是esp、ebp寄存器，esp寄存器存放栈顶的内存地址，ebp和esp之间的内容为栈帧。最后是内核级别的输出，其中console.c文件主要是负责将字符输出显示到控制台，printfmt.c文件的内容主要是输出内容的格式转换，printf.c则是编程时最顶层的格式化输出函数的。
 
 
 
-## 附：堆栈讲解
+## 附：从寄存器角度来讲解栈的使用
 
-在讲解堆栈的使用之前时候，我们首先来提一下堆栈会用到的几个寄存器。
+在讲解栈的使用之前时候，我们首先来提一下栈会用到的几个寄存器。
 
 - **esp**寄存器
 
@@ -957,13 +964,106 @@ call    i386_init
 
 这些是堆栈讲解过程中会用到的一些指令
 
-![](./image/Lab1_9.jpg)
+```assembly
+# memory: more work space
+movl %eax, %edx		edx = eax;				 register mode
+movl $0x123, %edx	edx = 0x123;			 immediate
+movl 0x123, %edx	edx = *(int32_t *)0x123;  		direct
+movl (%ebx), %edx	edx = *(int32_t *)ebx;			indirect
+movl 4(%ebx), %edx	edx = *(int32_t *)(ebx+4);	 	 displaced
 
-![](./image/Lab1_10.jpg)
+# stack memory + opearations
+# Example instruction		what it does
+	push %eax				sub $4, %esp
+							movl %eax, (%esp)
+							
+	popl %eax				 movl (%esp), %eax
+						     addl $4, %esp
+						     
+	call 0x12345			 push %eip(*)
+						     movl $0x12345, %eip(*)
+						  
+	ret 					 popl %eip(*)
+```
 
-> leave：这个指令是函数开头的`pushl %ebp`和`movl %esp, %ebp`的逆操作，即将 ebp的值赋给 esp，这样esp指向的栈顶保存着上一个函数的 ebp 的值。然后执行 popl %ebp，将栈顶元素弹出到 ebp 寄存器，同时esp的值加4指向上一个函数的下一条指令地址。
+>leave：这个指令是函数开头的`pushl %ebp`和`movl %esp, %ebp`的逆操作，即将 ebp的值赋给 esp，这样esp指向的栈顶保存着上一个函数的 ebp 的值。然后执行 popl %ebp，将栈顶元素弹出到 ebp 寄存器，同时esp的值加4指向上一个函数的下一条指令地址。
 >
-> ret：弹出栈顶元素并将eip设置为该值，跳转到该地址执行。
+>ret：弹出栈顶元素并将eip设置为该值，跳转到该地址执行。
+
+那么下面我们拿一段C代码来讲解一下函数调用过程中对栈的操作到底是怎么样的？C示例代码如下
+
+```c
+int fun2(int c, int d){
+  int e = c + d;
+  return e;
+}
+
+int fun1(int a, int b){
+  return fun2(a, b);
+}
+
+int main(){
+  fun1(1, 2);
+  return 0;
+}
+```
+
+接下去使用如下代码，将其编译成汇编文件
+
+```bash
+gcc -S -O0 -m32 -o stack.s stack.c
+```
+
+之后查看编译出来的汇编文件，其中主要的内容如下所示
+
+```assembly
+fun2:
+  pushl %ebp
+  movl  %esp, %ebp
+  subl  $16, %esp
+  movl  8(%ebp), %edx
+  movl  12(%ebp), %eax
+  addl  %edx, %eax
+  movl  %eax, -4(%ebp)
+  movl  -4(%ebp), %eax
+  leave
+  ret
+fun1:
+  pushl %ebp
+  movl  %esp, %ebp
+  pushl 12(%ebp)
+  pushl 8(%ebp)
+  call  fun2
+  addl  $8, %esp
+  leave
+  ret
+main:
+  pushl %ebp
+  movl  %esp, %ebp
+  pushl $2
+  pushl $1
+  call  fun1
+  addl  $8, %esp
+  movl  $0, %eax
+  leave
+  ret
+```
+
+通过汇编文件stack.s我们可以看到函数调用时栈的变化。前面提到过栈是由高地址向低地址扩展的，那么从main函数开始，调用main函数之后，首先将ebp寄存器的值压入栈（此时ebp为0）--->将esp的值复制给ebp，那么（从此开始是main函数的栈帧了）--->将2、1依次压入（从右往左）--->之后再使用call指令调用fun1函数（先把此时eip寄存器的值压入stack，再把fun1的地址存到eip寄存器中）--->由于eip寄存器存的是fun1函数的起始地址，所以从fun1函数开始，也就是`pushl %ebp`，相当于把此时ebp寄存器的值压入栈--->把这个时候esp寄存器的值赋值给ebp寄存器的值--->依次类推。
+
+![](./image/Lab1_14.gif)
+
+最终我们得到如下几点重要的内容：
+
+- 当在函数A中调用另一个函数B的时候，函数A在跳转到函数B之前，会先把当前eip寄存器的值压入stack。
+
+  那么在跳转到函数B之后，第一件做的事是把当前ebp的值压入；
+
+- 函数的栈帧是从ebp寄存器所指的位置到esp所指的空间；
+
+- 函数参数的压入是从右往左的；
+
+---
 
 下面我们来看一下操作系统内核是从哪条指令开始初始化它的堆栈空间的，boot loader程序最后会跳转到kern/entry.S文件中的entry地址处，此时控制权交给了entry.S文件（内核程序）。在跳转到entry之前，并没有对esp、ebp等寄存器的内容进行修改，可见boot loader程序中并没有初始化堆栈空间，初始化堆栈空间留到了内核程序。下面进入entry.S，entry.S中最后一条指令是调用`kern/init.c`中i386_init()这个函数
 
@@ -994,37 +1094,18 @@ movl    $(bootstacktop),%esp
 
 ### 保护模式
 
-但是随着CPU的发展，CPU的地址个数从原来的20根也变成了现在的32根，所以可以访问的内存空间也从1MB变成了现在的4GB，寄存器的位数也变成32位。所以实模式下的内存地址计算方式就不再适合了，也就引入了现在的保护模式，实现更大空间的，更灵活的内存访问。在介绍保护模式的工作原理之前，我们先来了解一下逻辑地址（logical address）、虚拟地址（virtual address）、线性地址（linear address）、物理地址（physical address）:
+随着CPU的发展，CPU的地址个数从原来的20根也变成了现在的32根，所以可以访问的内存空间也从1MB变成了现在的4GB，寄存器的位数也变成32位。所以实模式下的内存地址计算方式就不再适合了，也就引入了现在的保护模式，实现更大空间的，更灵活的内存访问。其中一个就是虚拟地址，一个虚拟地址由两部分组成，一部分是段选择子（segment selector），另一部分是段内偏移量（offset），通常被写作（segment:offset）。而采用哪个段选择子通常也是在指令中隐含的，程序员通常只需要指明段内偏移量。然后分段管理机构（segmentation hardware）将这个虚拟地址转换为线性地址（linear addresss）。如果机器中没有采用分页机制（paging hardware）的话，此时线性地址（linear address）就是做最后的物理地址。但是假如机器中还有分页设备的话，分页机构把这个线性地址转换为最终真实的物理地址。
 
-- 虚拟地址
+那么在保护模式下，是如何通过虚拟地址（segment:offset）得到物理地址呢？
 
-  如今在**编写程序时，程序是运行在虚拟地址空间下**，也就是说，在程序员编写程序时指令中出现的地址并不一定是这个程序在内存中运行时真正要访问的内存地址。这样做的目的是为了能够让程序员在编程时不需要直接操作真实地址，因为它在真正运行时，内存中各个程序的分布情况是不可能在你编写程序时就知道。所以这个程序的这条指令到底要访问哪个内存单元是由操作系统来确定的，所以后面就有了一个从虚拟地址（virtual address）到真实主存中的物理地址（physical address）的转换。
+在计算机中存在两个表GDT（全局段描述符表）、LDT（本地段描述符表）。它们两个是同类型的表，都是用来存放关于某个运行在内存中的程序的分段信息的，如程序的代码段从哪开始，有多大；数据段从哪开始，有多大。GDT表是全局可见的，也就是每一个运行在内存中的程序都能看到这个表，所以内核程序的段信息就存在这里面。LDT表，是每一个在内存中的程序所包含的，里面指明了每一个程序的段信息。
 
-- 逻辑地址&&线性地址
+当程序中给出虚拟地址（segment:offset）时，它并不是像实模式那样，用segment的值作为段基址，而是把这个segment的值作为一个selector，代表这个段的段表项在GDT/LDT表的索引。找到相应的段表项之后，根据Flags字段来判断是否可以访问这个段的内容，**这样做是了能够实现进程间地址的保护**。如果能访问，则把Base字段的内容取出，直接与offset相加，就得到了线性地址（linear address）了。之后假如有分页机构的话，那么就根据分页机构进行地址转换。更加具体的转换过程可以看Lab2.
 
-  在虚拟地址中，程序员编写时看的是虚拟地址，这个虚拟地址不是直接写在指令中的，而是通过逻辑地址推导而成。所以指令中真正出现的是逻辑地址。一个逻辑地址由两部分组成，一个是段选择子（segment selector），一个段内偏移量（offset），通常被写作（segment:offset）。而采用哪个段选择子通常也是在指令中隐含的，程序员通常只需要指明段内偏移量。然后分段管理机构（segmentation hardware）将这个逻辑地址（logical address）转换为线性地址（linear addresss）。如果机器中没有采用分页机制（paging hardware）的话，此时线性地址（linear address）就是做最后的物理地址。但是假如机器中还有分页设备的话，分页机构把这个线性地址转换为最终真实的物理地址。下面是逻辑地址、线性地址、物理地址的转换关系。
+而个人认为实模式和保护模式不同的区别在于两点：
 
-  ![img](./image/relation_logical_linear_physical.png)
-
-那么在保护模式下，是如何通过逻辑地址（segment:offset）得到物理地址呢？
-
-在计算机中存在两个表GDT（全局段描述符表）、LDT（本地段描述符表）。它们两个是同类型的表，都是用来存放关于某个运行在内存中的程序的分段信息的，如程序的代码段从哪开始，有多大；数据段从哪开始，有多大。GDT表是全局可见的，也就是每一个运行在内存中的程序都能看到这个表，所以内核程序的段信息就存在这里面。LDT表，是每一个在内存中的程序所包含的，里面指明了每一个程序的段信息，我们可以看一下这两个表的结构。如下所示：
-
-![img](./image/segment_protected.png)
-
-每一个表项都包括三个字段：
-
-Base：32位，代表这个程序的这个段的基地址
-
-Limit：20位，代表这个程序的这个段的大小
-
-Flags：12位，代表这个程序的这个段的访问权限
-
-当程序中给出逻辑地址（segment:offset）时，它并不是像实模式那样，用segment的值作为段基址，而是把这个segment的值作为一个selector，代表这个段的段表项在GDT/LDT表的索引。比如你当前要访问的地址segment:offset = 0x01:0x0000ffff，此时由于每个段表项的长度为8，所以此时应该取出地址为8处的段表项。然后根据Flags字段来判断是否可以访问这个段的内容，这样做是了能够实现进程间地址的保护。如果能访问，则把Base字段的内容取出，直接与offset相加，就得到了线性地址（linear address）了。之后假如有分页机构的话，那么就根据分页机构进行地址转换。
-
-**本段参考**
-
-1.https://www.cnblogs.com/fatsheep9146/p/5116426.html
+1. 物理地址转换方式不同，保护模式下相对复杂，但是也足够灵活；
+2. 实模式下不存在flags等标识位，对于任何地址都可以直接访问，而保护模式下有flags等标识位，那么起到了一定的保护作用；
 
 ## 附：ELF文件
 
@@ -1058,7 +1139,7 @@ ELF文件可以分为一下几个部分：ELF文件头，程序头表（program 
                         +------------------+       
 ```
 
-再接下去我们讲解一下6.828中定义的ELF文件的结构体，定义在`inc/elf.h`文件中
+再接下去我们讲解一下6.828中定义的ELF文件头的结构体，定义在`inc/elf.h`文件中
 
 ```c
 // ELF 文件头

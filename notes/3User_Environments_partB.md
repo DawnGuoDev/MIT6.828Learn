@@ -144,7 +144,7 @@ syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 }   
 ```
 
-> 在C语言中使用内联汇编，`asm`是必要的用于说明随后的字符串是内联汇编代码块，`volatile`是可选的，表示禁止编译器的优化。其中`:`表示输入输出；`=a`表示输出将%eax的值保存到ret中；“i”表示使用一个立即整数操作数(值固定)，而`"int %1\n"`中的`%1`表示值正是`T_SYSCALL`；接下去的a、b、c、d、D、S代表的分别可以参考附录[appendix：内联汇编](#appendix：内联汇编)中的表格，第二冒号后面的表示的输入，比如把num值放入%eax中；最后的`"cc", "memory"`就是通知GCC不再假定内存中的值依然合法，CPU中的registers和cache中已缓存的内存单元中的数据将作废，CPU将不得不在需要的时候重新读取内存中的数据。
+> 在C语言中使用内联汇编，`asm`是必要的用于说明随后的字符串是内联汇编代码块，`volatile`是可选的，表示禁止编译器的优化。其中`:`表示输入输出；`=a`表示输出将%eax的值保存到ret中；“i”表示使用一个立即整数操作数(值固定)，而`"int %1\n"`中的`%1`表示值正是`T_SYSCALL`；接下去的a、b、c、d、D、S代表的分别可以参考附录[appendix：内联汇编](#appendix：内联汇编)中的表格，第二冒号后面的表示的输入，比如把num值放入%eax中；最后的`"cc", "memory"`就是通知GCC假定内存中的值不再合法，CPU中的registers和cache中已缓存的内存单元中的数据将作废，CPU将不得不在需要的时候重新读取内存中的数据。
 
 修改` kern/trapentry.S`和`kern/trap.c`中的`trap_init()`，给中断向量T_SYSCALL添加一个处理程序。这一步我们可以参考Lab3 partA部分对于这个部分的操作。首先是`kern/trapentry.S`
 
@@ -348,7 +348,7 @@ void umain(int argc, char **argv)
 
 同时system call给内存保护带来了一个有趣的问题，大部分system call接口可以让用户程序把指针传给kernel，这些指针指向用户的缓冲区为了读或者写。当执行system call的时候，内核将会dereferences这些指针，但是会存在以下两个问题：
 
-- 通过system call传给内核的指针可能会引起page fault，然而内核中出现page fault比用户程序中出现page fault更加严重，如果内核在操作它自己的数据结构时出现page fault，那是一个kernel bug，这个故障处理应该是panic kernel。但是当内核在dereferences用户程序给它的指针时，它需要一种方式去记住这些dereferences造成的page fault实际上代表的都是user program。
+- 通过system call传给内核的指针可能会引起page fault，然而内核中出现page fault比用户程序中出现page fault更加严重，如果内核在操作它自己的数据结构时出现page fault，那是一个kernel bug，这个故障处理应该是panic kernel。但是当内核在dereferences用户程序给它的指针时，它需要一种方式知道它dereferences的这些指针都是user program的page fault造成的。
 
 - 通过system call传给内核的指针还可能会破坏内核窃取内存等，因为内核比用户程序有更多的内存权限，用户程序可能会把一个指针传给system call，这个指针指向的内存区域是kernel可以访问的，但是用户程序不能。此时内核必须小心不要去dereference这个指针，一旦dereference这个指针可能会揭露个人信息或者破坏内核的完整性。
 
@@ -356,7 +356,7 @@ void umain(int argc, char **argv)
 
 所以综上所述，在处理用户程序传过来的指针时，内核必须十分小心的。现在我们将安全检查所有从用户空间传到内核的指针来解决这两个问题。当一个程序把一个地址传给内核，内核将会检查该地址是否位于地址空间的用户部分，如果是的话page table会允许相关的内存操作。因此kernel在dereference用户提供的地址的时候，将永不会发生page fault。
 
-改变`kern/trap.c`当page fault发生在kernel mode下的时候执行panic()函数（Hint：决定一个fault是发生在user mode还是kernel mode，我们可以检查tf_cs的低位）。其中CS的第0-1位是特权等级位，用户模式下的特权等级是3，kernel mode下的特权等级是0，也就是说tf_cs的低两位是去判断陷入进来的程序是用户程序还是内核程序。那么所撰写代码如下：
+改变`kern/trap.c`当page fault发生在kernel mode下的时候执行panic()函数（Hint：决定一个fault是发生在user mode还是kernel mode，我们可以检查tf_cs的低位）。其中CS寄存器的第0-1位是特权等级位，用户模式下的特权等级是3，kernel mode下的特权等级是0，也就是说tf_cs的低两位是去判断陷入进来的程序是用户程序还是内核程序。那么所撰写代码如下：
 
 ```c
 void
